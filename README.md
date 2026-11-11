@@ -8,6 +8,8 @@ Under the hood each request runs:
 claude -p "<your message>" --output-format json
 ```
 
+By default it runs in **clean mode**: a plain chat with no project context, no tools and no user settings (see [Modes](#modes)).
+
 No dependencies — just Node.js 18+.
 
 ## Requirements
@@ -79,11 +81,34 @@ All via environment variables:
 | `HOST`              | `127.0.0.1`   | Interface to bind to.                        |
 | `CLAUDE_BIN`        | auto-detected | Path to the `claude` binary.                 |
 | `CLAUDE_TIMEOUT_MS` | `300000`      | Maximum time for one `claude` run (5 minutes). |
+| `CLAUDE_MODE`       | `clean`       | `clean` or `project` — see [Modes](#modes).  |
+| `CLAUDE_SYSTEM_PROMPT` | `You are a helpful assistant.` | System prompt used in clean mode. |
+| `CLAUDE_CWD`        | see Modes     | Directory `claude` runs in.                  |
 
 When `CLAUDE_BIN` is not set, the server looks for `claude` in `PATH`, then falls back to the binary bundled with the Claude desktop app on macOS. The path it picked is printed at startup.
 
+## Modes
+
+### `clean` (default)
+
+Claude behaves like a plain chat model. It gets no project context (no git status, no `CLAUDE.md`, no memory), no tools (it cannot read files, run commands or browse), no MCP servers, no skills, and none of your Claude Code settings. Each request adds these flags:
+
+```bash
+--system-prompt "<CLAUDE_SYSTEM_PROMPT>" --tools "" --setting-sources "" --strict-mcp-config --disable-slash-commands
+```
+
+`claude` still sees the path of its working directory, so it runs in an empty folder, `chat-workspace` inside the system temp directory. Sessions can only be resumed from the directory they were started in, so keep `CLAUDE_CWD` stable if you rely on `sessionId`.
+
+### `project`
+
+Full Claude Code, running in the directory the server was started from (or `CLAUDE_CWD`). It loads that project's context and has its usual tools, so API callers can ask it about the files there.
+
+```bash
+CLAUDE_MODE=project npm start
+```
+
 ## Security
 
-There is **no authentication**. Anyone who can reach the port can run Claude Code on your machine, under your account and at your cost. The server binds to `127.0.0.1` by default for that reason — don't expose it to a network without putting your own auth in front of it.
+There is **no authentication**. Anyone who can reach the port can run Claude on your machine, under your account and at your cost — and in `project` mode, have it read the files in its working directory. The server binds to `127.0.0.1` by default for that reason — don't expose it to a network without putting your own auth in front of it.
 
 The message is passed to `claude` as a single argument, never through a shell, so it cannot inject shell commands.

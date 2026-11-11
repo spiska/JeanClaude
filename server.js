@@ -1,13 +1,33 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '127.0.0.1';
 const CLAUDE_BIN = resolveClaudeBin();
 const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000);
+
+// "clean" (default): plain chat — no project context, no tools, no user settings.
+// "project": full Claude Code in the directory the server was started from.
+const MODE = process.env.CLAUDE_MODE ?? 'clean';
+if (MODE !== 'clean' && MODE !== 'project') {
+  console.error(`Invalid CLAUDE_MODE "${MODE}" — use "clean" or "project"`);
+  process.exit(1);
+}
+const SYSTEM_PROMPT = process.env.CLAUDE_SYSTEM_PROMPT ?? 'You are a helpful assistant.';
+// claude still sees the path of its working directory, so clean mode runs it in an
+// empty one. The path must stay stable: sessions can only be resumed from the same cwd.
+const CLAUDE_CWD = process.env.CLAUDE_CWD ?? (MODE === 'clean' ? join(tmpdir(), 'chat-workspace') : process.cwd());
+if (MODE === 'clean') mkdirSync(CLAUDE_CWD, { recursive: true });
+const CLEAN_ARGS = [
+  '--system-prompt', SYSTEM_PROMPT, // replaces the default prompt (drops git status, project info)
+  '--tools', '', // no file, shell or web tools
+  '--setting-sources', '', // ignore user/project/local settings
+  '--strict-mcp-config', // no MCP servers
+  '--disable-slash-commands', // no skills or commands
+];
 const MAX_BODY_BYTES = 1024 * 1024;
 
 /**
@@ -81,9 +101,11 @@ async function readJsonBody(req) {
 function runClaude(message, { sessionId, signal } = {}) {
   return new Promise((resolve, reject) => {
     const args = ['-p', message, '--output-format', 'json'];
+    if (MODE === 'clean') args.push(...CLEAN_ARGS);
     if (sessionId) args.push('--resume', sessionId);
 
     const child = spawn(CLAUDE_BIN, args, {
+      cwd: CLAUDE_CWD,
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: TIMEOUT_MS,
       signal,
@@ -167,4 +189,5 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`JeanClaude is running at http://${HOST}:${PORT}`);
   console.log(`claude: ${CLAUDE_BIN}`);
+  console.log(`mode: ${MODE} (cwd: ${CLAUDE_CWD})`);
 });
