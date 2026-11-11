@@ -1,0 +1,14 @@
+{
+  "name": "jeanclaude",
+  "version": "0.1.0",
+  "description": "HTTP API nad `claude -p` — pošli message, dostaneš JSON",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
