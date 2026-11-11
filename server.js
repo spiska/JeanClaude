@@ -11,8 +11,8 @@ const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000);
 const MAX_BODY_BYTES = 1024 * 1024;
 
 /**
- * Poradie: CLAUDE_BIN z env → `claude` v PATH → binárka pribalená v desktopovej
- * appke Claude (najnovšia verzia; cesta sa mení s každým updatom, preto ju hľadáme).
+ * Order: CLAUDE_BIN from env → `claude` in PATH → the binary bundled with the Claude
+ * desktop app (newest version; its path changes on every update, so we look it up).
  */
 function resolveClaudeBin() {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
@@ -62,7 +62,7 @@ async function readJsonBody(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'Body je príliš veľké');
+    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'Request body is too large');
     chunks.push(chunk);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -70,13 +70,13 @@ async function readJsonBody(req) {
   try {
     return JSON.parse(raw);
   } catch {
-    throw new HttpError(400, 'Body nie je validný JSON');
+    throw new HttpError(400, 'Request body is not valid JSON');
   }
 }
 
 /**
- * Spustí `claude -p <message> --output-format json` a vráti rozparsovaný JSON.
- * Message ide ako samostatný argument (žiadny shell), takže sa nedá injektovať príkaz.
+ * Runs `claude -p <message> --output-format json` and returns the parsed JSON.
+ * The message is passed as a single argument (no shell), so it cannot inject commands.
  */
 function runClaude(message, { sessionId, signal } = {}) {
   return new Promise((resolve, reject) => {
@@ -96,9 +96,9 @@ function runClaude(message, { sessionId, signal } = {}) {
 
     child.on('error', (err) => {
       if (err.code === 'ENOENT') {
-        reject(new HttpError(500, `Nenašiel som binárku "${CLAUDE_BIN}" — nastav CLAUDE_BIN alebo PATH`));
+        reject(new HttpError(500, `Could not find the "${CLAUDE_BIN}" binary — set CLAUDE_BIN or fix PATH`));
       } else if (err.name === 'AbortError') {
-        reject(new HttpError(499, 'Klient zrušil request'));
+        reject(new HttpError(499, 'Client closed the request'));
       } else {
         reject(new HttpError(500, err.message));
       }
@@ -106,14 +106,14 @@ function runClaude(message, { sessionId, signal } = {}) {
 
     child.on('close', (code, sig) => {
       if (sig) {
-        return reject(new HttpError(504, `claude bol ukončený signálom ${sig} (timeout ${TIMEOUT_MS} ms?)`));
+        return reject(new HttpError(504, `claude was killed by ${sig} (timeout of ${TIMEOUT_MS} ms?)`));
       }
       let parsed;
       try {
         parsed = JSON.parse(stdout);
       } catch {
         return reject(
-          new HttpError(502, 'claude nevrátil validný JSON', {
+          new HttpError(502, 'claude did not return valid JSON', {
             exitCode: code,
             stdout: stdout.slice(0, 2000),
             stderr: stderr.slice(0, 2000),
@@ -121,7 +121,7 @@ function runClaude(message, { sessionId, signal } = {}) {
         );
       }
       if (code !== 0) {
-        return reject(new HttpError(502, `claude skončil s kódom ${code}`, { claude: parsed, stderr: stderr.slice(0, 2000) }));
+        return reject(new HttpError(502, `claude exited with code ${code}`, { claude: parsed, stderr: stderr.slice(0, 2000) }));
       }
       resolve(parsed);
     });
@@ -139,13 +139,13 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const { message, sessionId } = body;
       if (typeof message !== 'string' || !message.trim()) {
-        throw new HttpError(400, 'Chýba pole "message" (neprázdny string)');
+        throw new HttpError(400, 'Missing "message" field (non-empty string)');
       }
       if (sessionId !== undefined && typeof sessionId !== 'string') {
-        throw new HttpError(400, '"sessionId" musí byť string');
+        throw new HttpError(400, '"sessionId" must be a string');
       }
 
-      // Keď klient zavrie spojenie, zabijeme aj claude proces.
+      // If the client disconnects, kill the claude process too.
       const ac = new AbortController();
       res.on('close', () => {
         if (!res.writableEnded) ac.abort();
@@ -165,6 +165,6 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`JeanClaude beží na http://${HOST}:${PORT}`);
+  console.log(`JeanClaude is running at http://${HOST}:${PORT}`);
   console.log(`claude: ${CLAUDE_BIN}`);
 });

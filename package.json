@@ -1,7 +1,7 @@
 {
   "name": "jeanclaude",
   "version": "0.1.0",
-  "description": "HTTP API nad `claude -p` — pošli message, dostaneš JSON",
+  "description": "HTTP API over `claude -p` — send a message, get JSON back",
   "type": "module",
   "main": "server.js",
   "scripts": {
