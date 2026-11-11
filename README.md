@@ -1,6 +1,6 @@
 # JeanClaude
 
-A tiny HTTP API in front of the [Claude Code](https://claude.com/claude-code) CLI. It exposes two things:
+A tiny HTTP API in front of the [Claude](https://claude.com/claude-code) CLI. It gives you:
 
 - an **OpenAI-compatible** `POST /v1/chat/completions` (with streaming), so chat apps that accept a custom OpenAI base URL can use Claude as their provider;
 - a simple `POST /message` that returns the CLI's raw JSON result, optionally streamed;
@@ -12,8 +12,8 @@ Built with [Hono](https://hono.dev).
 
 ## Requirements
 
-- Node.js 18 or newer
-- The `claude` CLI, logged in (`claude auth login`)
+- Node.js 20 or newer
+- The `claude` CLI, logged in (`claude auth login`), or a `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in the environment (see [Run in a container](#run-in-a-container))
 
 ## Run
 
@@ -25,26 +25,34 @@ npm install
 npm start
 ```
 
-The server listens on `http://127.0.0.1:3000`. Use `npm run dev` to restart on file changes.
+The server listens on `http://127.0.0.1:3000`. `npm run dev` restarts it when a `.js` file changes. The chat page (`public/index.html`) is read once at startup, so restart the server after editing it.
 
 ## Chat in the browser
 
-Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets you pick the model, and shows the time and cost of each reply.
+Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets you pick the model, and shows how long each reply took and what it cost. The cost is `total_cost_usd` from `claude`: what the reply would cost at API prices. On a subscription you are not billed for it; it counts towards the usage limits instead.
 
 - The conversation is a Claude session kept on the server; the page sends only your new message plus the session id. If the server no longer has the session (for example the container was recreated without a volume), the page replays the chat as text and carries on in a new session.
 - Past chats are listed in the sidebar (a drawer on small screens). Chats and settings are saved in the browser's local storage, so they stay on that browser and device only. Deleting a chat removes it from the browser; its session file stays on the server.
 - The header shows how much of the subscription's 5-hour and weekly limits is used, as reported by `claude` with the last reply (hover for the reset time). It updates after each message; with an API key instead of a subscription there is nothing to show.
-- If the server uses `JEANCLAUDE_API_KEY`, enter the key under Settings. The page itself loads without it.
+- If the server uses `JEANCLAUDE_API_KEY`, enter the key in Settings (the gear icon). The page itself loads without it.
+- The system prompt in Settings applies to chats started after you save; a running chat keeps the one it started with.
 
 ## Run in a container
 
-Every push to `main` builds an image (linux/amd64 and linux/arm64) and publishes it to `ghcr.io/spiska/jeanclaude`. It contains JeanClaude and the Claude Code CLI.
+Every push to `main` builds an image (linux/amd64 and linux/arm64) and publishes it to `ghcr.io/spiska/jeanclaude` as `latest` and `sha-<short commit sha>`; a `v*` git tag is published under its own name. The image contains JeanClaude and the Claude Code CLI, pinned to the version JeanClaude was tested with (`CLAUDE_CODE_VERSION` in the `Containerfile`).
 
 A server has no browser to log in with, so create a long-lived token on a machine where you are logged in:
 
 ```bash
 claude setup-token
 ```
+
+1. It prints a sign-in URL and tries to open it in your browser. If no browser opens (for example over SSH), copy the URL into a browser yourself.
+2. Sign in with your Claude account and authorize the request.
+3. The browser then shows a code. Copy it, paste it back into the terminal where `setup-token` is waiting, and press Enter.
+4. The terminal prints the token, a long string starting with `sk-ant-oat01-`. Copy all of it. It is shown only once and is valid for a year.
+
+Treat the token like a password: whoever has it can use your subscription. It works only with the `claude` CLI, not as a key for the Claude API.
 
 Then pass it to the container. Put the secrets in a file readable only by you, e.g. `jeanclaude.env`:
 
@@ -61,7 +69,8 @@ Notes:
 
 - Inside the container the server listens on `0.0.0.0`; what is reachable from outside is decided by `-p`. The example publishes it on the host's loopback only — put a reverse proxy with HTTPS in front if other machines need it, and always set `JEANCLAUDE_API_KEY`.
 - With an Anthropic API key instead of a subscription, set `ANTHROPIC_API_KEY` in place of `CLAUDE_CODE_OAUTH_TOKEN`.
-- Sessions used by `/message` + `sessionId` live in `/home/node/.claude` and are lost when the container is removed. Mount a volume there to keep them.
+- `claude` runs in `/workspace`, an empty directory in the image.
+- Sessions (used by the chat page and by `/message` with `sessionId`) are saved in `/home/node/.claude` and are lost when the container is removed. To keep them, add a volume: `-v jeanclaude-data:/home/node/.claude`. Without it the chat page still works — it replays old chats as text when their session is gone.
 - To build locally: `podman build -t jeanclaude .`
 
 ## Use it as an OpenAI-compatible provider
@@ -88,6 +97,8 @@ curl -sN localhost:3000/v1/chat/completions \
   -d '{"model":"sonnet","stream":true,"messages":[{"role":"user","content":"count to ten"}]}'
 ```
 
+If the server uses `JEANCLAUDE_API_KEY`, add `-H "authorization: Bearer $JEANCLAUDE_API_KEY"` to these and the other `curl` examples.
+
 ### What is and isn't supported
 
 | Feature                              | Status                                                         |
@@ -112,7 +123,7 @@ JeanClaude's own endpoint. One message in, the CLI's result object out — inclu
 | `message`   | string  | yes      | The prompt.                                        |
 | `sessionId` | string  | no       | Continue an earlier conversation (`--resume <id>`). |
 | `model`     | string  | no       | Same values as for the OpenAI endpoint.            |
-| `system`    | string  | no       | System prompt for a new conversation.              |
+| `system`    | string  | no       | System prompt for a new conversation. A resumed session keeps the one it started with. |
 | `stream`    | boolean | no       | Reply as server-sent events instead of one JSON.   |
 
 ```bash
@@ -151,7 +162,7 @@ With `"stream": true` the reply is a series of `data:` events, each a JSON objec
 
 ## Errors
 
-`/message` returns `{"error": "..."}`; the `/v1/*` endpoints use the OpenAI shape, `{"error": {"message": "...", "type": "..."}}`.
+`/message` returns `{"error": "..."}`, plus `claude`'s result object and stderr when it failed; the `/v1/*` endpoints use the OpenAI shape, `{"error": {"message": "...", "type": "..."}}`.
 
 | Status | Meaning                                                              |
 | ------ | -------------------------------------------------------------------- |
@@ -172,13 +183,15 @@ All via environment variables:
 | Variable               | Default                        | Description                                    |
 | ---------------------- | ------------------------------ | ---------------------------------------------- |
 | `PORT`                 | `3000`                         | Port to listen on.                             |
-| `HOST`                 | `127.0.0.1`                    | Interface to bind to.                          |
+| `HOST`                 | `127.0.0.1` (`0.0.0.0` in the container) | Interface to bind to.                |
 | `JEANCLAUDE_API_KEY`   | not set                        | If set, requests must send `Authorization: Bearer <key>`. |
 | `CLAUDE_BIN`           | auto-detected                  | Path to the `claude` binary.                   |
 | `CLAUDE_TIMEOUT_MS`    | `300000`                       | Maximum time for one `claude` run (5 minutes). |
 | `CLAUDE_MODE`          | `clean`                        | `clean` or `project` — see [Modes](#modes).    |
 | `CLAUDE_SYSTEM_PROMPT` | `You are a helpful assistant.` | Default system prompt in clean mode.           |
-| `CLAUDE_CWD`           | see Modes                      | Directory `claude` runs in.                    |
+| `CLAUDE_CWD`           | see Modes (`/workspace` in the container) | Directory `claude` runs in.         |
+
+`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` are not read by JeanClaude itself; `claude` inherits them and uses them to log in.
 
 When `CLAUDE_BIN` is not set, the server looks for `claude` in `PATH`, then falls back to the binary bundled with the Claude desktop app on macOS. The path it picked is printed at startup.
 
@@ -192,13 +205,13 @@ Claude behaves like a plain chat model. It gets no project context (no git statu
 --system-prompt "<system prompt>" --tools "" --setting-sources "" --strict-mcp-config --disable-slash-commands
 ```
 
-The system prompt comes from the request's `system` messages, or `CLAUDE_SYSTEM_PROMPT` if there are none.
+The system prompt comes from the request (`system` messages on `/v1/chat/completions`, the `system` field on `/message`), or `CLAUDE_SYSTEM_PROMPT` if it has none.
 
 `claude` still sees the path of its working directory, so it runs in an empty folder, `chat-workspace` inside the system temp directory. Sessions can only be resumed from the directory they were started in, so keep `CLAUDE_CWD` stable if you rely on `sessionId`.
 
 ### `project`
 
-Full Claude Code, running in the directory the server was started from (or `CLAUDE_CWD`). It loads that project's context and has its usual tools, so API callers can ask it about the files there. A request's `system` messages are appended to Claude Code's own system prompt.
+Full Claude Code, running in the directory the server was started from (or `CLAUDE_CWD`). It loads that project's context (`CLAUDE.md`, settings, MCP servers) and can read and search the files there, so API callers can ask about them. Nobody is around to approve permission prompts, so tools that need approval — editing files, running commands — are refused unless that project's or your user settings allow them. A request's system prompt is appended to Claude Code's own.
 
 ```bash
 CLAUDE_MODE=project npm start
