@@ -26,7 +26,7 @@
   button, select, input, textarea { font: inherit; color: inherit; }
   .btn, select {
     background: transparent; border: 1px solid var(--line); border-radius: 8px;
-    padding: 6px 12px; cursor: pointer; min-height: 36px; white-space: nowrap;
+    padding: 4px 10px; cursor: pointer; min-height: 32px; font-size: 14.5px; white-space: nowrap;
   }
   select { min-width: 0; }
   /* Own arrow instead of the native one, which sits tight against the border. */
@@ -49,15 +49,15 @@
   #chats { list-style: none; margin: 0; padding: 8px; overflow-y: auto; flex: 1; }
   #chats li { display: flex; align-items: center; border-radius: 8px; }
   #chats li:hover, #chats li.active { background: var(--user); }
-  #chats button { background: none; border: 0; cursor: pointer; border-radius: 8px; min-height: 40px; }
+  #chats button { background: none; border: 0; cursor: pointer; border-radius: 8px; min-height: 34px; }
   #chats .open { flex: 1; min-width: 0; text-align: left; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #chats .del { flex: none; width: 36px; color: var(--muted); font-size: 18px; line-height: 1; opacity: 0; }
+  #chats .del { flex: none; width: 32px; color: var(--muted); font-size: 18px; line-height: 1; opacity: 0; }
   #chats li:hover .del, #chats li.active .del, #chats .del:focus-visible { opacity: 1; }
   #chats .del:hover { color: var(--danger); }
   #chats .none { color: var(--muted); font-size: 14px; padding: 10px; }
   #backdrop { display: none; }
   #toggle-chats { display: none; }
-  .btn.icon { display: inline-flex; padding: 0; width: 40px; min-height: 40px; align-items: center; justify-content: center; }
+  .btn.icon { display: inline-flex; padding: 0; width: 32px; min-height: 32px; align-items: center; justify-content: center; }
 
   .app { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   header {
@@ -127,10 +127,10 @@
   footer { border-top: 1px solid var(--line); background: var(--panel); padding: 12px 16px; }
   form.composer { display: flex; gap: 8px; align-items: flex-end; }
   textarea {
-    flex: 1; resize: none; max-height: 40vh; min-height: 44px; padding: 10px 12px;
+    flex: 1; resize: none; max-height: 40vh; min-height: 40px; padding: 8px 12px;
     background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
   }
-  form.composer .btn { min-height: 44px; min-width: 72px; }
+  form.composer .btn { min-height: 40px; min-width: 64px; }
 
   dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 20px; width: min(480px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgba(0, 0, 0, .45); }
@@ -154,7 +154,7 @@
 <div class="app">
   <header>
     <button class="btn icon" id="toggle-chats" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Chats" title="Chats">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <h1>JeanClaude</h1>
     <div id="limits" role="group" aria-label="Usage limits" hidden></div>
@@ -164,7 +164,7 @@
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
     </span>
     <button class="btn icon" id="open-settings" type="button" aria-label="Settings" title="Settings">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
   </header>
 
