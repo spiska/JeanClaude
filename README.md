@@ -13,7 +13,7 @@ Built with [Hono](https://hono.dev).
 ## Requirements
 
 - Node.js 20 or newer
-- The `claude` CLI, logged in (`claude auth login`), or a `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in the environment (see [Run in a container](#run-in-a-container))
+- The `claude` CLI, logged in (`claude auth login`), or a `CLAUDE_CODE_OAUTH_TOKEN` in the environment (see [Run in a container](#run-in-a-container))
 
 ## Run
 
@@ -33,7 +33,7 @@ Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets 
 
 - The conversation is a Claude session kept on the server; the page sends only your new message plus the session id. If the server no longer has the session (for example the container was recreated without a volume), the page replays the chat as text and carries on in a new session.
 - Past chats are listed in the sidebar (a drawer on small screens). Chats and settings are saved in the browser's local storage, so they stay on that browser and device only. Deleting a chat removes it from the browser; its session file stays on the server.
-- The header shows how much of the subscription's 5-hour and weekly limits is used, as reported by `claude` with the last reply (hover for the reset time). It updates after each message; with an API key instead of a subscription there is nothing to show.
+- The header shows how much of the subscription's 5-hour and weekly limits is used, as reported by `claude` with the last reply (hover for the reset time). It updates after each message.
 - If the server uses `JEANCLAUDE_API_KEY`, enter the key in Settings (the gear icon). The page itself loads without it.
 - The system prompt in Settings applies to chats started after you save; a running chat keeps the one it started with.
 
@@ -68,7 +68,6 @@ podman run -d --name jeanclaude --env-file jeanclaude.env -p 127.0.0.1:3000:3000
 Notes:
 
 - Inside the container the server listens on `0.0.0.0`; what is reachable from outside is decided by `-p`. The example publishes it on the host's loopback only — put a reverse proxy with HTTPS in front if other machines need it, and always set `JEANCLAUDE_API_KEY`.
-- With an Anthropic API key instead of a subscription, set `ANTHROPIC_API_KEY` in place of `CLAUDE_CODE_OAUTH_TOKEN`.
 - `claude` runs in `/workspace`, an empty directory in the image.
 - Sessions (used by the chat page and by `/message` with `sessionId`) are saved in `/home/node/.claude` and are lost when the container is removed. To keep them, add a volume: `-v jeanclaude-data:/home/node/.claude`. Without it the chat page still works — it replays old chats as text when their session is gone.
 - To build locally: `podman build -t jeanclaude .`
@@ -191,7 +190,7 @@ All via environment variables:
 | `CLAUDE_SYSTEM_PROMPT` | `You are a helpful assistant.` | Default system prompt in clean mode.           |
 | `CLAUDE_CWD`           | see Modes (`/workspace` in the container) | Directory `claude` runs in.         |
 
-`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` are not read by JeanClaude itself; `claude` inherits them and uses them to log in.
+`CLAUDE_CODE_OAUTH_TOKEN` is not read by JeanClaude itself; `claude` inherits it and uses it to log in.
 
 When `CLAUDE_BIN` is not set, the server looks for `claude` in `PATH`, then falls back to the binary bundled with the Claude desktop app on macOS. The path it picked is printed at startup.
 
@@ -223,4 +222,4 @@ By default there is **no authentication**. Anyone who can reach the port can run
 
 The prompt is passed to `claude` on stdin, never through a shell or as a command-line flag, so it cannot inject commands or options.
 
-JeanClaude uses whatever account the `claude` CLI is logged in to. A Claude subscription is meant for your own use; check Anthropic's terms before putting this behind an app that other people use, and use the Claude API with an API key for that instead.
+JeanClaude uses whatever account the `claude` CLI is logged in to. A Claude subscription is meant for your own use; check Anthropic's terms before putting this behind an app that other people use.
