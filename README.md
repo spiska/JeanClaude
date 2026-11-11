@@ -206,7 +206,7 @@ Claude behaves like a plain chat model. It gets no project context (no git statu
 
 The system prompt comes from the request (`system` messages on `/v1/chat/completions`, the `system` field on `/message`), or `CLAUDE_SYSTEM_PROMPT` if it has none.
 
-`claude` still sees the path of its working directory, so it runs in an empty folder, `chat-workspace` inside the system temp directory. Sessions can only be resumed from the directory they were started in, so keep `CLAUDE_CWD` stable if you rely on `sessionId`.
+`claude` still adds some context of its own: the path of its working directory, the OS, and that it runs on the Claude Agent SDK. So it runs in an empty folder, `chat-workspace` inside the system temp directory, and JeanClaude appends a short note to every system prompt telling the model it is a plain chat assistant without tools and should not mention that context. Without it, the model tends to introduce itself as a coding agent working in that folder. Sessions can only be resumed from the directory they were started in, so keep `CLAUDE_CWD` stable if you rely on `sessionId`.
 
 ### `project`
 

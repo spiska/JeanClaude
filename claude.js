@@ -23,6 +23,13 @@ if (MODE !== 'clean' && MODE !== 'project') {
   process.exit(1);
 }
 const SYSTEM_PROMPT = process.env.CLAUDE_SYSTEM_PROMPT ?? 'You are a helpful assistant.';
+// claude adds its own context even to a replaced system prompt: the working
+// directory, the OS, that it runs on the Agent SDK. Without this note the model
+// tends to introduce itself as a coding agent working in that directory.
+const CLEAN_MODE_NOTE =
+  'You are used as a plain chat assistant, not as a coding agent. You have no tools: you cannot read or ' +
+  'write files, run commands or browse the web. Any working directory, environment or session details you ' +
+  'may see are internal to the app running you — never mention them.';
 // claude still sees the path of its working directory, so clean mode runs it in an
 // empty one. The path must stay stable: sessions can only be resumed from the same cwd.
 export const CLAUDE_CWD =
@@ -77,7 +84,8 @@ function spawnClaude({ prompt, stream = false, systemPrompt, model, sessionId, p
   if (stream) args.push('--verbose', '--include-partial-messages');
   if (MODE === 'clean') {
     args.push(
-      '--system-prompt', systemPrompt ?? SYSTEM_PROMPT, // replaces the default prompt (drops git status, project info)
+      // replaces the default prompt (drops git status, project info)
+      '--system-prompt', `${systemPrompt ?? SYSTEM_PROMPT}\n\n${CLEAN_MODE_NOTE}`,
       '--tools', '', // no file, shell or web tools
       '--setting-sources', '', // ignore user/project/local settings
       '--strict-mcp-config', // no MCP servers
