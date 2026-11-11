@@ -1,7 +1,7 @@
 {
   "name": "jeanclaude",
   "version": "0.1.0",
-  "description": "HTTP API over `claude -p` — send a message, get JSON back",
+  "description": "OpenAI-compatible HTTP API in front of the Claude Code CLI (`claude -p`)",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -10,5 +10,9 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.6",
+    "hono": "4.13.16"
   }
 }

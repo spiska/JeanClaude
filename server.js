@@ -1,193 +1,141 @@
-import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
+import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import { streamSSE } from 'hono/streaming';
+import { CLAUDE_BIN, CLAUDE_CWD, HttpError, MODE, runClaude, streamClaude } from './claude.js';
+import { MODELS, chunk, completion, errorBody, newCompletionId, resolveModel, toPrompt } from './openai.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '127.0.0.1';
-const CLAUDE_BIN = resolveClaudeBin();
-const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000);
+const API_KEY = process.env.JEANCLAUDE_API_KEY;
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
-// "clean" (default): plain chat — no project context, no tools, no user settings.
-// "project": full Claude Code in the directory the server was started from.
-const MODE = process.env.CLAUDE_MODE ?? 'clean';
-if (MODE !== 'clean' && MODE !== 'project') {
-  console.error(`Invalid CLAUDE_MODE "${MODE}" — use "clean" or "project"`);
-  process.exit(1);
-}
-const SYSTEM_PROMPT = process.env.CLAUDE_SYSTEM_PROMPT ?? 'You are a helpful assistant.';
-// claude still sees the path of its working directory, so clean mode runs it in an
-// empty one. The path must stay stable: sessions can only be resumed from the same cwd.
-const CLAUDE_CWD = process.env.CLAUDE_CWD ?? (MODE === 'clean' ? join(tmpdir(), 'chat-workspace') : process.cwd());
-if (MODE === 'clean') mkdirSync(CLAUDE_CWD, { recursive: true });
-const CLEAN_ARGS = [
-  '--system-prompt', SYSTEM_PROMPT, // replaces the default prompt (drops git status, project info)
-  '--tools', '', // no file, shell or web tools
-  '--setting-sources', '', // ignore user/project/local settings
-  '--strict-mcp-config', // no MCP servers
-  '--disable-slash-commands', // no skills or commands
-];
-const MAX_BODY_BYTES = 1024 * 1024;
+const app = new Hono();
 
-/**
- * Order: CLAUDE_BIN from env → `claude` in PATH → the binary bundled with the Claude
- * desktop app (newest version; its path changes on every update, so we look it up).
- */
-function resolveClaudeBin() {
-  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+const isOpenAiPath = (c) => c.req.path.startsWith('/v1/');
 
-  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-    if (dir && existsSync(join(dir, 'claude'))) return join(dir, 'claude');
-  }
-
-  const root = join(homedir(), 'Library', 'Application Support', 'Claude', 'claude-code');
-  const list = (dir) => {
-    try {
-      return readdirSync(dir);
-    } catch {
-      return [];
-    }
-  };
-  const versions = list(root).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  for (const version of versions) {
-    for (const build of list(join(root, version))) {
-      const bin = join(root, version, build, 'claude.app', 'Contents', 'MacOS', 'claude');
-      if (existsSync(bin)) return bin;
-    }
-  }
-
-  return 'claude';
-}
-
-class HttpError extends Error {
-  constructor(status, message, extra = {}) {
-    super(message);
-    this.status = status;
-    this.extra = extra;
-  }
-}
-
-function send(res, status, body) {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(payload),
-  });
-  res.end(payload);
-}
-
-async function readJsonBody(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'Request body is too large');
-    chunks.push(chunk);
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  if (!raw.trim()) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new HttpError(400, 'Request body is not valid JSON');
-  }
-}
-
-/**
- * Runs `claude -p <message> --output-format json` and returns the parsed JSON.
- * The message is passed as a single argument (no shell), so it cannot inject commands.
- */
-function runClaude(message, { sessionId, signal } = {}) {
-  return new Promise((resolve, reject) => {
-    const args = ['-p', message, '--output-format', 'json'];
-    if (MODE === 'clean') args.push(...CLEAN_ARGS);
-    if (sessionId) args.push('--resume', sessionId);
-
-    const child = spawn(CLAUDE_BIN, args, {
-      cwd: CLAUDE_CWD,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: TIMEOUT_MS,
-      signal,
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
-    child.stderr.setEncoding('utf8').on('data', (d) => (stderr += d));
-
-    child.on('error', (err) => {
-      if (err.code === 'ENOENT') {
-        reject(new HttpError(500, `Could not find the "${CLAUDE_BIN}" binary — set CLAUDE_BIN or fix PATH`));
-      } else if (err.name === 'AbortError') {
-        reject(new HttpError(499, 'Client closed the request'));
-      } else {
-        reject(new HttpError(500, err.message));
-      }
-    });
-
-    child.on('close', (code, sig) => {
-      if (sig) {
-        return reject(new HttpError(504, `claude was killed by ${sig} (timeout of ${TIMEOUT_MS} ms?)`));
-      }
-      let parsed;
-      try {
-        parsed = JSON.parse(stdout);
-      } catch {
-        return reject(
-          new HttpError(502, 'claude did not return valid JSON', {
-            exitCode: code,
-            stdout: stdout.slice(0, 2000),
-            stderr: stderr.slice(0, 2000),
-          }),
-        );
-      }
-      if (code !== 0) {
-        return reject(new HttpError(502, `claude exited with code ${code}`, { claude: parsed, stderr: stderr.slice(0, 2000) }));
-      }
-      resolve(parsed);
-    });
-  });
-}
-
-const server = createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
-  try {
-    if (req.method === 'GET' && url.pathname === '/health') {
-      return send(res, 200, { ok: true });
-    }
-
-    if (req.method === 'POST' && url.pathname === '/message') {
-      const body = await readJsonBody(req);
-      const { message, sessionId } = body;
-      if (typeof message !== 'string' || !message.trim()) {
-        throw new HttpError(400, 'Missing "message" field (non-empty string)');
-      }
-      if (sessionId !== undefined && typeof sessionId !== 'string') {
-        throw new HttpError(400, '"sessionId" must be a string');
-      }
-
-      // If the client disconnects, kill the claude process too.
-      const ac = new AbortController();
-      res.on('close', () => {
-        if (!res.writableEnded) ac.abort();
-      });
-
-      const result = await runClaude(message, { sessionId, signal: ac.signal });
-      return send(res, 200, result);
-    }
-
-    throw new HttpError(404, 'Not found');
-  } catch (err) {
-    if (res.destroyed) return;
-    const status = err instanceof HttpError ? err.status : 500;
-    if (status >= 500) console.error(`[${req.method} ${url.pathname}]`, err.message);
-    send(res, status, { error: err.message, ...(err.extra ?? {}) });
-  }
+app.onError((err, c) => {
+  const status = err instanceof HttpError ? err.status : 500;
+  if (status >= 500) console.error(`[${c.req.method} ${c.req.path}]`, err.message);
+  if (isOpenAiPath(c)) return c.json(errorBody(err, status), status);
+  return c.json({ error: err.message, ...(err.extra ?? {}) }, status);
 });
 
-server.listen(PORT, HOST, () => {
+app.notFound((c) => {
+  const err = new HttpError(404, 'Not found');
+  return c.json(isOpenAiPath(c) ? errorBody(err, 404) : { error: err.message }, 404);
+});
+
+app.get('/health', (c) => c.json({ ok: true }));
+
+// Optional shared secret. OpenAI clients send it as "Authorization: Bearer <key>".
+app.use(async (c, next) => {
+  if (API_KEY) {
+    const given = Buffer.from(c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? '');
+    const expected = Buffer.from(API_KEY);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      throw new HttpError(401, 'Missing or invalid API key');
+    }
+  }
+  await next();
+});
+
+app.use(
+  bodyLimit({
+    maxSize: MAX_BODY_BYTES,
+    onError: () => {
+      throw new HttpError(413, 'Request body is too large');
+    },
+  }),
+);
+
+async function jsonBody(c) {
+  try {
+    const body = await c.req.json();
+    if (body && typeof body === 'object' && !Array.isArray(body)) return body;
+  } catch {
+    // fall through
+  }
+  throw new HttpError(400, 'Request body must be a JSON object');
+}
+
+// JeanClaude's own endpoint: one message in, claude's raw result JSON out.
+app.post('/message', async (c) => {
+  const { message, sessionId } = await jsonBody(c);
+  if (typeof message !== 'string' || !message.trim()) {
+    throw new HttpError(400, 'Missing "message" field (non-empty string)');
+  }
+  if (sessionId !== undefined && typeof sessionId !== 'string') {
+    throw new HttpError(400, '"sessionId" must be a string');
+  }
+  const result = await runClaude({ prompt: message, sessionId, signal: c.req.raw.signal });
+  return c.json(result);
+});
+
+app.get('/v1/models', (c) =>
+  c.json({
+    object: 'list',
+    data: MODELS.map((id) => ({ id, object: 'model', created: 0, owned_by: 'anthropic' })),
+  }),
+);
+
+// OpenAI-compatible chat completions, with and without streaming. Stateless: the
+// client sends the whole conversation each time, so nothing is saved to disk.
+app.post('/v1/chat/completions', async (c) => {
+  const body = await jsonBody(c);
+  const { systemPrompt, prompt } = toPrompt(body.messages);
+  const id = newCompletionId();
+  const created = Math.floor(Date.now() / 1000);
+  const model = typeof body.model === 'string' ? body.model : 'default';
+  const options = { prompt, systemPrompt, model: resolveModel(body.model), persist: false };
+
+  if (!body.stream) {
+    const result = await runClaude({ ...options, signal: c.req.raw.signal });
+    return c.json(completion({ id, created, model, result }));
+  }
+
+  // Covers both phases: before the response starts (request signal) and while it
+  // is streaming (stream.onAbort). Either way claude is killed.
+  const abort = new AbortController();
+  c.req.raw.signal.addEventListener('abort', () => abort.abort(), { once: true });
+  const events = streamClaude({ ...options, signal: abort.signal })[Symbol.asyncIterator]();
+  // Wait for the first event before committing to a 200: if claude fails up front
+  // (not logged in, bad model), the client gets a proper JSON error instead.
+  let next = await events.next();
+
+  return streamSSE(c, async (stream) => {
+    stream.onAbort(() => abort.abort());
+    const send = (data) => stream.writeSSE({ data: typeof data === 'string' ? data : JSON.stringify(data) });
+    const base = { id, created, model };
+    try {
+      await send(chunk({ ...base, delta: { role: 'assistant', content: '' } }));
+      let sentText = false;
+      for (; !next.done; next = await events.next()) {
+        const event = next.value;
+        if (event.type === 'delta') {
+          sentText = true;
+          await send(chunk({ ...base, delta: { content: event.text } }));
+        } else if (event.type === 'result') {
+          if (!sentText && event.result.result) {
+            await send(chunk({ ...base, delta: { content: String(event.result.result) } }));
+          }
+          await send(chunk({ ...base, delta: {}, finishReason: 'stop' }));
+          if (body.stream_options?.include_usage) await send(chunk({ ...base, result: event.result }));
+        }
+      }
+      await send('[DONE]');
+    } catch (err) {
+      if (abort.signal.aborted) return;
+      console.error('[POST /v1/chat/completions] stream failed:', err.message);
+      await send(errorBody(err, err instanceof HttpError ? err.status : 500));
+    }
+  });
+});
+
+serve({ fetch: app.fetch, port: PORT, hostname: HOST }, () => {
   console.log(`JeanClaude is running at http://${HOST}:${PORT}`);
   console.log(`claude: ${CLAUDE_BIN}`);
   console.log(`mode: ${MODE} (cwd: ${CLAUDE_CWD})`);
+  console.log(`api key: ${API_KEY ? 'required' : 'not required'}`);
 });
