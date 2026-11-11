@@ -3,7 +3,8 @@
 A tiny HTTP API in front of the [Claude Code](https://claude.com/claude-code) CLI. It exposes two things:
 
 - an **OpenAI-compatible** `POST /v1/chat/completions` (with streaming), so chat apps that accept a custom OpenAI base URL can use Claude as their provider;
-- a simple `POST /message` that returns the CLI's raw JSON result.
+- a simple `POST /message` that returns the CLI's raw JSON result, optionally streamed;
+- a small **chat page** in the browser at `/`, built on `/message`.
 
 Under the hood each request runs `claude -p` and feeds it the prompt on stdin. By default it runs in **clean mode**: a plain chat with no project context, no tools and no user settings (see [Modes](#modes)).
 
@@ -25,6 +26,14 @@ npm start
 ```
 
 The server listens on `http://127.0.0.1:3000`. Use `npm run dev` to restart on file changes.
+
+## Chat in the browser
+
+Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets you pick the model, and shows the time and cost of each reply.
+
+- The conversation is a Claude session kept on the server; the page sends only your new message plus the session id. If the server no longer has the session (for example the container was recreated without a volume), the page replays the chat as text and carries on in a new session.
+- Messages and settings are saved in the browser's local storage, so a reload keeps the chat. "New chat" starts a fresh session.
+- If the server uses `JEANCLAUDE_API_KEY`, enter the key under Settings. The page itself loads without it.
 
 ## Run in a container
 
@@ -97,10 +106,13 @@ The endpoint is stateless: the client sends the whole conversation every time an
 
 JeanClaude's own endpoint. One message in, the CLI's result object out — including cost, usage and a session id you can use to continue the conversation.
 
-| Field       | Type   | Required | Description                                        |
-| ----------- | ------ | -------- | -------------------------------------------------- |
-| `message`   | string | yes      | The prompt.                                        |
-| `sessionId` | string | no       | Continue an earlier conversation (`--resume <id>`). |
+| Field       | Type    | Required | Description                                        |
+| ----------- | ------- | -------- | -------------------------------------------------- |
+| `message`   | string  | yes      | The prompt.                                        |
+| `sessionId` | string  | no       | Continue an earlier conversation (`--resume <id>`). |
+| `model`     | string  | no       | Same values as for the OpenAI endpoint.            |
+| `system`    | string  | no       | System prompt for a new conversation.              |
+| `stream`    | boolean | no       | Reply as server-sent events instead of one JSON.   |
 
 ```bash
 curl -s -X POST localhost:3000/message \
@@ -122,8 +134,17 @@ Response (trimmed):
 
 Pass `session_id` back as `sessionId` to keep the conversation going.
 
+With `"stream": true` the reply is a series of `data:` events, each a JSON object:
+
+| `type`   | Fields   | Meaning                                              |
+| -------- | -------- | ---------------------------------------------------- |
+| `delta`  | `text`   | The next piece of the answer.                        |
+| `result` | `result` | Last event: the same result object as shown above.   |
+| `error`  | `error`  | Last event if claude failed after the stream started. |
+
 ## Other endpoints
 
+- `GET /` — the chat page. Never requires an API key.
 - `GET /health` — returns `{"ok": true}`. Never requires an API key.
 
 ## Errors

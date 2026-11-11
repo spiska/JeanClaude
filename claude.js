@@ -122,6 +122,13 @@ function exitError({ error, code, sig }) {
   return undefined;
 }
 
+/** Why a result object is an error: its text, or the CLI's `errors` list (e.g. unknown session). */
+function failureReason(result) {
+  if (typeof result?.result === 'string' && result.result) return result.result;
+  if (Array.isArray(result?.errors) && result.errors.length) return result.errors.join('; ');
+  return '';
+}
+
 /** Runs claude to completion and returns its parsed JSON result object. */
 export async function runClaude(options) {
   const { child, exited, stderr } = spawnClaude({ ...options, stream: false });
@@ -143,8 +150,8 @@ export async function runClaude(options) {
     });
   }
   if (end.code !== 0 || parsed.is_error) {
-    const reason = parsed.is_error && parsed.result ? `: ${parsed.result}` : '';
-    throw new HttpError(502, `claude exited with code ${end.code}${reason}`, { claude: parsed, stderr: stderr() });
+    const reason = failureReason(parsed);
+    throw new HttpError(502, `claude exited with code ${end.code}${reason ? `: ${reason}` : ''}`, { claude: parsed, stderr: stderr() });
   }
   return parsed;
 }
@@ -181,7 +188,7 @@ export async function* streamClaude(options) {
       throw new HttpError(502, 'claude ended without a result', { exitCode: end.code, stderr: stderr() });
     }
     if (result.is_error || end.code !== 0) {
-      throw new HttpError(502, String(result.result ?? `claude exited with code ${end.code}`), {
+      throw new HttpError(502, failureReason(result) || `claude exited with code ${end.code}`, {
         claude: result,
         stderr: stderr(),
       });

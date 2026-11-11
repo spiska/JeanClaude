@@ -10,6 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js claude.js openai.js ./
+COPY public ./public
 
 # Empty directory claude runs in (see "Modes" in the README).
 RUN mkdir /workspace && chown node:node /workspace
