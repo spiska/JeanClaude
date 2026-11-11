@@ -159,6 +159,7 @@ export async function runClaude(options) {
 /**
  * Runs claude and yields its output as it is generated:
  *   { type: 'delta', text }     a piece of the answer
+ *   { type: 'limits', limits }  subscription usage limits (rate_limit_info), when claude reports them
  *   { type: 'result', result }  the final result object (always last)
  * Throws HttpError if claude fails.
  */
@@ -176,6 +177,8 @@ export async function* streamClaude(options) {
       }
       if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
         yield { type: 'delta', text: event.event.delta.text };
+      } else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
+        yield { type: 'limits', limits: event.rate_limit_info };
       } else if (event.type === 'result') {
         result = event;
       }

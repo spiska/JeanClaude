@@ -61,6 +61,15 @@
   }
   header h1 { font-size: 17px; margin: 0; margin-right: auto; letter-spacing: .01em; }
 
+  /* ---- usage limits ---- */
+  #limits { display: flex; gap: 12px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #limits[hidden] { display: none; }
+  .limit { display: flex; align-items: center; gap: 6px; cursor: default; }
+  .limit .bar { width: 44px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .limit .fill { display: block; height: 100%; background: var(--accent); }
+  .limit.high .fill { background: var(--danger); }
+  .limit.high .pct { color: var(--danger); font-weight: 600; }
+
   @media (max-width: 760px) {
     aside {
       position: fixed; inset: 0 auto 0 0; z-index: 20; width: min(300px, 86vw);
@@ -73,6 +82,8 @@
     header { padding: 8px 12px; }
     header h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
     header select { margin-left: auto; }
+    #limits { gap: 8px; }
+    .limit .bar { display: none; }
   }
   @media (prefers-reduced-motion: reduce) { aside { transition: none; } }
 
@@ -138,6 +149,7 @@
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <h1>JeanClaude</h1>
+    <div id="limits" role="group" aria-label="Usage limits" hidden></div>
     <label class="sr" for="model">Model</label>
     <select id="model"></select>
     <button class="btn" id="open-settings" type="button">Settings</button>
@@ -481,12 +493,71 @@ async function streamMessage({ message, sessionId, signal, onDelta }) {
         if (!line.startsWith('data:')) continue;
         const event = JSON.parse(line.slice(5));
         if (event.type === 'delta') onDelta(event.text);
+        else if (event.type === 'limits') setLimits(event.limits);
         else if (event.type === 'result') result = event.result;
         else if (event.type === 'error') throw new ServerError(event.error || 'The server reported an error.', 502);
       }
     }
   }
   return result;
+}
+
+// ---- usage limits ----
+// claude reports how much of the subscription's usage windows is used up with each
+// reply. Keep the last report so the header shows it after a reload too.
+const LIMIT_NAMES = { five_hour: ['5h', '5-hour limit'], seven_day: ['7d', 'Weekly limit'] };
+let limits = store.get('jc.limits', null);
+
+function setLimits(info) {
+  limits = info;
+  store.set('jc.limits', info);
+  renderLimits();
+}
+
+function windowsOf(info) {
+  if (!info) return [];
+  if (info.unifiedWindows && typeof info.unifiedWindows === 'object') return Object.entries(info.unifiedWindows);
+  if (info.rateLimitType && typeof info.utilization === 'number') return [[info.rateLimitType, info]];
+  return [];
+}
+
+function resetText(seconds) {
+  const at = new Date(seconds * 1000);
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return sameDay
+    ? at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : at.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderLimits() {
+  const box = $('limits');
+  const items = windowsOf(limits).filter(([, w]) => w && typeof w.utilization === 'number');
+  box.hidden = !items.length;
+  box.replaceChildren(...items.map(([key, w]) => {
+    const [short, long] = LIMIT_NAMES[key] ?? [key.replace(/_/g, ' '), key.replace(/_/g, ' ')];
+    // Past the reset time the stored number is stale; the next reply brings a fresh one.
+    const expired = typeof w.resetsAt === 'number' && w.resetsAt * 1000 <= Date.now();
+    const pct = Math.round(Math.min(Math.max(w.utilization, 0), 1) * 100);
+    const el = document.createElement('div');
+    el.className = 'limit' + (!expired && (pct >= 90 || (w.status && w.status !== 'allowed')) ? ' high' : '');
+    el.title = expired
+      ? `${long}: reset since — send a message to refresh`
+      : `${long}: ${pct}% used` + (typeof w.resetsAt === 'number' ? `, resets ${resetText(w.resetsAt)}` : '');
+    const label = document.createElement('span');
+    label.textContent = short;
+    const bar = document.createElement('span');
+    bar.className = 'bar';
+    const fill = document.createElement('span');
+    fill.className = 'fill';
+    fill.style.width = (expired ? 0 : pct) + '%';
+    bar.append(fill);
+    const value = document.createElement('span');
+    value.className = 'pct';
+    value.textContent = expired ? '–' : pct + '%';
+    el.append(label, bar, value);
+    el.setAttribute('aria-label', el.title);
+    return el;
+  }));
 }
 
 /** Used when the server no longer has our session (e.g. it was restarted): replay the chat as text. */
@@ -623,6 +694,8 @@ $('settings-form').addEventListener('submit', () => {
 });
 
 render();
+renderLimits();
+setInterval(renderLimits, 60_000); // notice when a window resets
 loadModels();
 </script>
 </body>

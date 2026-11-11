@@ -131,7 +131,11 @@ app.post('/message', async (c) => {
   }
 
   return streamResponse(c, options, {
-    event: (e, send) => send(e.type === 'delta' ? { type: 'delta', text: e.text } : { type: 'result', result: e.result }),
+    event: (e, send) => {
+      if (e.type === 'delta') return send({ type: 'delta', text: e.text });
+      if (e.type === 'limits') return send({ type: 'limits', limits: e.limits });
+      return send({ type: 'result', result: e.result });
+    },
     error: (err) => ({ type: 'error', error: err.message }),
   });
 });
@@ -167,7 +171,7 @@ app.post('/v1/chat/completions', async (c) => {
       if (e.type === 'delta') {
         sentText = true;
         await send(chunk({ ...base, delta: { content: e.text } }));
-      } else {
+      } else if (e.type === 'result') {
         if (!sentText && e.result.result) await send(chunk({ ...base, delta: { content: String(e.result.result) } }));
         await send(chunk({ ...base, delta: {}, finishReason: 'stop' }));
         if (body.stream_options?.include_usage) await send(chunk({ ...base, result: e.result }));

@@ -33,6 +33,7 @@ Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets 
 
 - The conversation is a Claude session kept on the server; the page sends only your new message plus the session id. If the server no longer has the session (for example the container was recreated without a volume), the page replays the chat as text and carries on in a new session.
 - Past chats are listed in the sidebar (a drawer on small screens). Chats and settings are saved in the browser's local storage, so they stay on that browser and device only. Deleting a chat removes it from the browser; its session file stays on the server.
+- The header shows how much of the subscription's 5-hour and weekly limits is used, as reported by `claude` with the last reply (hover for the reset time). It updates after each message; with an API key instead of a subscription there is nothing to show.
 - If the server uses `JEANCLAUDE_API_KEY`, enter the key under Settings. The page itself loads without it.
 
 ## Run in a container
@@ -139,6 +140,7 @@ With `"stream": true` the reply is a series of `data:` events, each a JSON objec
 | `type`   | Fields   | Meaning                                              |
 | -------- | -------- | ---------------------------------------------------- |
 | `delta`  | `text`   | The next piece of the answer.                        |
+| `limits` | `limits` | Subscription usage limits (`rate_limit_info` from the CLI), if reported. |
 | `result` | `result` | Last event: the same result object as shown above.   |
 | `error`  | `error`  | Last event if claude failed after the stream started. |
 
