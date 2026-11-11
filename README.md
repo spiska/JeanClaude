@@ -26,6 +26,34 @@ npm start
 
 The server listens on `http://127.0.0.1:3000`. Use `npm run dev` to restart on file changes.
 
+## Run in a container
+
+Every push to `main` builds an image (linux/amd64 and linux/arm64) and publishes it to `ghcr.io/spiska/jeanclaude`. It contains JeanClaude and the Claude Code CLI.
+
+A server has no browser to log in with, so create a long-lived token on a machine where you are logged in:
+
+```bash
+claude setup-token
+```
+
+Then pass it to the container. Put the secrets in a file readable only by you, e.g. `jeanclaude.env`:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=<token from setup-token>
+JEANCLAUDE_API_KEY=<a long random string>
+```
+
+```bash
+podman run -d --name jeanclaude --env-file jeanclaude.env -p 127.0.0.1:3000:3000 ghcr.io/spiska/jeanclaude:latest
+```
+
+Notes:
+
+- Inside the container the server listens on `0.0.0.0`; what is reachable from outside is decided by `-p`. The example publishes it on the host's loopback only — put a reverse proxy with HTTPS in front if other machines need it, and always set `JEANCLAUDE_API_KEY`.
+- With an Anthropic API key instead of a subscription, set `ANTHROPIC_API_KEY` in place of `CLAUDE_CODE_OAUTH_TOKEN`.
+- Sessions used by `/message` + `sessionId` live in `/home/node/.claude` and are lost when the container is removed. Mount a volume there to keep them.
+- To build locally: `podman build -t jeanclaude .`
+
 ## Use it as an OpenAI-compatible provider
 
 Point the app at JeanClaude:

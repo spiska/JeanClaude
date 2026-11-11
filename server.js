@@ -138,4 +138,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: HOST }, () => {
   console.log(`claude: ${CLAUDE_BIN}`);
   console.log(`mode: ${MODE} (cwd: ${CLAUDE_CWD})`);
   console.log(`api key: ${API_KEY ? 'required' : 'not required'}`);
+  if (!API_KEY && !['127.0.0.1', '::1', 'localhost'].includes(HOST)) {
+    console.warn('WARNING: listening on a non-loopback address without JEANCLAUDE_API_KEY — anyone who can reach this port can use your Claude account.');
+  }
 });
