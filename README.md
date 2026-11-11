@@ -32,7 +32,7 @@ The server listens on `http://127.0.0.1:3000`. Use `npm run dev` to restart on f
 Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets you pick the model, and shows the time and cost of each reply.
 
 - The conversation is a Claude session kept on the server; the page sends only your new message plus the session id. If the server no longer has the session (for example the container was recreated without a volume), the page replays the chat as text and carries on in a new session.
-- Messages and settings are saved in the browser's local storage, so a reload keeps the chat. "New chat" starts a fresh session.
+- Past chats are listed in the sidebar (a drawer on small screens). Chats and settings are saved in the browser's local storage, so they stay on that browser and device only. Deleting a chat removes it from the browser; its session file stays on the server.
 - If the server uses `JEANCLAUDE_API_KEY`, enter the key under Settings. The page itself loads without it.
 
 ## Run in a container

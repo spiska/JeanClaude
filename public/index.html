@@ -21,28 +21,62 @@
   body {
     background: var(--bg); color: var(--text);
     font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    display: flex; flex-direction: column;
+    display: flex;
   }
   button, select, input, textarea { font: inherit; color: inherit; }
-  header {
-    display: flex; align-items: center; gap: 8px; padding: 10px 16px;
-    border-bottom: 1px solid var(--line); background: var(--panel);
-  }
-  header h1 { font-size: 17px; margin: 0; margin-right: auto; letter-spacing: .01em; }
   .btn, select {
     background: transparent; border: 1px solid var(--line); border-radius: 8px;
     padding: 6px 12px; cursor: pointer; min-height: 36px; white-space: nowrap;
   }
   select { min-width: 0; }
-  @media (max-width: 460px) {
-    header { padding: 8px 12px; }
-    header h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-    header select { margin-right: auto; }
-  }
   .btn:hover, select:hover { border-color: var(--muted); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 
+  /* ---- sidebar: chat history ---- */
+  aside {
+    width: 268px; flex: none; display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--line);
+  }
+  aside .top { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  aside .top .btn { width: 100%; }
+  #chats { list-style: none; margin: 0; padding: 8px; overflow-y: auto; flex: 1; }
+  #chats li { display: flex; align-items: center; border-radius: 8px; }
+  #chats li:hover, #chats li.active { background: var(--user); }
+  #chats button { background: none; border: 0; cursor: pointer; border-radius: 8px; min-height: 40px; }
+  #chats .open { flex: 1; min-width: 0; text-align: left; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #chats .del { flex: none; width: 36px; color: var(--muted); font-size: 18px; line-height: 1; opacity: 0; }
+  #chats li:hover .del, #chats li.active .del, #chats .del:focus-visible { opacity: 1; }
+  #chats .del:hover { color: var(--danger); }
+  #chats .none { color: var(--muted); font-size: 14px; padding: 10px; }
+  #backdrop { display: none; }
+  #toggle-chats { display: none; }
+  .btn.icon { padding: 0; width: 40px; min-height: 40px; align-items: center; justify-content: center; }
+
+  .app { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  header {
+    display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 17px; margin: 0; margin-right: auto; letter-spacing: .01em; }
+
+  @media (max-width: 760px) {
+    aside {
+      position: fixed; inset: 0 auto 0 0; z-index: 20; width: min(300px, 86vw);
+      transform: translateX(-100%); transition: transform .18s ease; visibility: hidden;
+    }
+    body.drawer aside { transform: none; visibility: visible; }
+    body.drawer #backdrop { display: block; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, .45); }
+    #toggle-chats { display: inline-flex; }
+    #chats .del { opacity: 1; }
+    header { padding: 8px 12px; }
+    header h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    header select { margin-left: auto; }
+  }
+  @media (prefers-reduced-motion: reduce) { aside { transition: none; } }
+
+  /* ---- conversation ---- */
   main { flex: 1; overflow-y: auto; padding: 24px 16px; }
   .col { max-width: 760px; margin: 0 auto; }
   .empty { color: var(--muted); text-align: center; margin-top: 18vh; }
@@ -87,29 +121,40 @@
   dialog textarea { min-height: 90px; resize: vertical; max-height: none; }
   dialog .hint { font-size: 13px; color: var(--muted); margin: 4px 0 0; }
   dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  dialog p.what { margin: 0; overflow-wrap: anywhere; }
+  .btn.danger { background: var(--danger); border-color: var(--danger); color: var(--panel); font-weight: 600; }
 </style>
 </head>
 <body>
-<header>
-  <h1>JeanClaude</h1>
-  <label class="sr" for="model">Model</label>
-  <select id="model"></select>
-  <button class="btn" id="new" type="button">New chat</button>
-  <button class="btn" id="open-settings" type="button">Settings</button>
-</header>
+<aside id="sidebar" aria-label="Chats">
+  <div class="top"><button class="btn" id="new" type="button">New chat</button></div>
+  <ul id="chats"></ul>
+</aside>
+<div id="backdrop"></div>
 
-<main id="scroll">
-  <div class="col" id="messages" aria-live="polite"></div>
-</main>
+<div class="app">
+  <header>
+    <button class="btn icon" id="toggle-chats" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Chats" title="Chats">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <h1>JeanClaude</h1>
+    <label class="sr" for="model">Model</label>
+    <select id="model"></select>
+    <button class="btn" id="open-settings" type="button">Settings</button>
+  </header>
 
-<footer>
-  <form class="col composer" id="composer">
-    <label class="sr" for="input">Message</label>
-    <textarea id="input" rows="1" placeholder="Message Claude…" autofocus></textarea>
-    <button class="btn primary" id="send" type="submit">Send</button>
-  </form>
-</footer>
+  <main id="scroll">
+    <div class="col" id="messages" aria-live="polite"></div>
+  </main>
+
+  <footer>
+    <form class="col composer" id="composer">
+      <label class="sr" for="input">Message</label>
+      <textarea id="input" rows="1" placeholder="Message Claude…" autofocus></textarea>
+      <button class="btn primary" id="send" type="submit">Send</button>
+    </form>
+  </footer>
+</div>
 
 <dialog id="settings">
   <form method="dialog" id="settings-form">
@@ -127,26 +172,67 @@
   </form>
 </dialog>
 
+<dialog id="confirm-delete" aria-labelledby="confirm-title">
+  <form method="dialog">
+    <h2 id="confirm-title">Delete chat?</h2>
+    <p class="what" id="confirm-what"></p>
+    <p class="hint">It will be removed from this browser.</p>
+    <div class="row">
+      <button class="btn" value="cancel" autofocus>Cancel</button>
+      <button class="btn danger" value="delete">Delete</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
 const els = {
   messages: $('messages'), scroll: $('scroll'), input: $('input'), send: $('send'), composer: $('composer'),
   model: $('model'), settings: $('settings'), apiKey: $('api-key'), system: $('system'),
+  chats: $('chats'), toggle: $('toggle-chats'),
 };
 
 // ---- storage (best effort: the page must work without it) ----
 const store = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode etc. */ } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode, quota */ } },
+  remove(key) { try { localStorage.removeItem(key); } catch { /* ignore */ } },
 };
 let settings = { apiKey: '', system: '', model: 'default', ...store.get('jc.settings', {}) };
-// The conversation itself lives on the server as a claude session; we keep its id
-// and a copy of the messages for display. messages: [{ role, content, meta? }]
-let chat = { sessionId: '', messages: [], ...store.get('jc.chat', {}) };
-if (!Array.isArray(chat.messages)) chat.messages = [];
+
+// ---- chats ----
+// Each conversation lives on the server as a claude session; here we keep its id and
+// a copy of the messages for display: { id, title, sessionId, messages, updatedAt }.
+// messages: [{ role: 'user' | 'assistant' | 'error', content, meta? }]
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+const newChat = () => ({ id: newId(), title: '', sessionId: '', messages: [], updatedAt: 0 });
+
+let chats = store.get('jc.chats', []);
+if (!Array.isArray(chats)) chats = [];
+chats = chats.filter((c) => c && typeof c.id === 'string' && Array.isArray(c.messages));
+{
+  // One-time migration from the single-chat version of this page.
+  const old = store.get('jc.chat', null);
+  if (old && Array.isArray(old.messages) && old.messages.length) {
+    const first = old.messages.find((m) => m.role === 'user');
+    chats.unshift({ ...newChat(), title: titleOf(first?.content ?? ''), sessionId: old.sessionId || '', messages: old.messages, updatedAt: Date.now() });
+    store.set('jc.chats', chats);
+    store.set('jc.current', chats[0].id); // reopen it, as before the upgrade
+  }
+  store.remove('jc.chat');
+}
+// The open chat. A new one is not added to `chats` until its first message is sent.
+let chat = chats.find((c) => c.id === store.get('jc.current', '')) ?? newChat();
 let controller = null; // AbortController while a reply is streaming
-const saveChat = () => store.set('jc.chat', { ...chat, messages: chat.messages.filter((m) => m.role !== 'error') });
+
+function titleOf(text) {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 80) || 'New chat';
+}
+function saveChats() {
+  store.set('jc.chats', chats.map((c) => ({ ...c, messages: c.messages.filter((m) => m.role !== 'error') })));
+  store.set('jc.current', chat.id);
+}
 
 // ---- minimal, safe markdown: everything is escaped first, then a few patterns become tags ----
 const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -247,7 +333,7 @@ function messageEl(m) {
   return wrap;
 }
 
-function render() {
+function renderMessages() {
   els.messages.replaceChildren();
   if (chat.messages.length === 0) {
     const empty = document.createElement('div');
@@ -259,6 +345,41 @@ function render() {
   toBottom();
 }
 
+function renderChats() {
+  els.chats.replaceChildren();
+  if (chats.length === 0) {
+    const none = document.createElement('li');
+    none.className = 'none';
+    none.textContent = 'No chats yet.';
+    els.chats.append(none);
+    return;
+  }
+  for (const c of chats.slice().sort((a, b) => b.updatedAt - a.updatedAt)) {
+    const li = document.createElement('li');
+    if (c.id === chat.id) li.className = 'active';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'open';
+    open.textContent = c.title || 'New chat';
+    open.title = c.title || '';
+    if (c.id === chat.id) open.setAttribute('aria-current', 'true');
+    open.addEventListener('click', () => openChat(c));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'del';
+    del.textContent = '×';
+    del.setAttribute('aria-label', `Delete chat: ${c.title || 'New chat'}`);
+    del.addEventListener('click', () => deleteChat(c));
+    li.append(open, del);
+    els.chats.append(li);
+  }
+}
+
+function render() {
+  renderChats();
+  renderMessages();
+}
+
 function setBusy(busy) {
   els.send.textContent = busy ? 'Stop' : 'Send';
   els.send.classList.toggle('primary', !busy);
@@ -267,6 +388,35 @@ function setBusy(busy) {
 function autosize() {
   els.input.style.height = 'auto';
   els.input.style.height = els.input.scrollHeight + 2 + 'px';
+}
+
+function setDrawer(open) {
+  document.body.classList.toggle('drawer', open);
+  els.toggle.setAttribute('aria-expanded', String(open));
+}
+
+// ---- switching between chats ----
+function show(next) {
+  if (controller) controller.abort(); // the reply so far is kept in the chat it belongs to
+  chat = next;
+  saveChats();
+  render();
+  setDrawer(false);
+  els.input.focus();
+}
+const openChat = (c) => { if (c.id !== chat.id) show(c); else setDrawer(false); };
+
+function deleteChat(c) {
+  const dialog = $('confirm-delete');
+  $('confirm-what').textContent = c.title || 'New chat';
+  dialog.returnValue = 'cancel';
+  dialog.addEventListener('close', () => {
+    if (dialog.returnValue !== 'delete') return;
+    chats = chats.filter((x) => x.id !== c.id);
+    if (c.id === chat.id) show(newChat());
+    else { saveChats(); renderChats(); }
+  }, { once: true });
+  dialog.showModal();
 }
 
 // ---- talking to the server ----
@@ -349,9 +499,17 @@ function withTranscript(earlier, message) {
 }
 
 async function send(text) {
-  chat.messages = chat.messages.filter((m) => m.role !== 'error');
-  const earlier = chat.messages.slice();
-  chat.messages.push({ role: 'user', content: text });
+  // `chat` may point to another conversation by the time the reply ends, so hold on to this one.
+  const mine = chat;
+  mine.messages = mine.messages.filter((m) => m.role !== 'error');
+  const earlier = mine.messages.slice();
+  mine.messages.push({ role: 'user', content: text });
+  if (!chats.includes(mine)) {
+    mine.title = titleOf(text);
+    chats.push(mine);
+  }
+  mine.updatedAt = Date.now();
+  saveChats();
   render();
 
   const reply = { role: 'assistant', content: '' };
@@ -361,12 +519,13 @@ async function send(text) {
   els.messages.append(el);
   toBottom();
 
-  controller = new AbortController();
+  const myController = new AbortController();
+  controller = myController;
   setBusy(true);
   let frame = 0;
   const onDelta = (piece) => {
     reply.content += piece;
-    if (frame) return;
+    if (frame || chat !== mine) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
       const stick = nearBottom();
@@ -382,14 +541,14 @@ async function send(text) {
     // Without a server session (lost earlier, or the first reply never arrived) the
     // model has no memory of this chat, so replay it as text.
     const replay = earlier.length ? withTranscript(earlier, text) : text;
-    const request = { message: chat.sessionId ? text : replay, sessionId: chat.sessionId, signal: controller.signal, onDelta };
+    const request = { message: mine.sessionId ? text : replay, sessionId: mine.sessionId, signal: myController.signal, onDelta };
     try {
       result = await streamMessage(request);
     } catch (err) {
       // A 502 before any text, on a resumed chat, most likely means the session is gone.
-      const sessionLost = err instanceof ServerError && err.status === 502 && chat.sessionId && !reply.content;
+      const sessionLost = err instanceof ServerError && err.status === 502 && mine.sessionId && !reply.content;
       if (!sessionLost) throw err;
-      chat.sessionId = '';
+      mine.sessionId = '';
       result = await streamMessage({ ...request, sessionId: '', message: replay });
     }
   } catch (err) {
@@ -397,9 +556,11 @@ async function send(text) {
   }
 
   if (frame) cancelAnimationFrame(frame);
-  controller = null;
-  setBusy(false);
-  if (result?.session_id) chat.sessionId = result.session_id;
+  if (controller === myController) {
+    controller = null;
+    setBusy(false);
+  }
+  if (result?.session_id) mine.sessionId = result.session_id;
   if (!reply.content && result?.result) reply.content = String(result.result);
   if (reply.content) {
     // keep what arrived, even if stopped or failed midway
@@ -408,12 +569,17 @@ async function send(text) {
       ms: Math.round(performance.now() - started),
       ...(typeof result?.total_cost_usd === 'number' ? { cost: result.total_cost_usd } : {}),
     };
-    chat.messages.push(reply);
+    mine.messages.push(reply);
   }
-  if (failure) chat.messages.push({ role: 'error', content: failure });
-  saveChat();
-  render();
-  els.input.focus();
+  if (failure) mine.messages.push({ role: 'error', content: failure });
+  mine.updatedAt = Date.now();
+  saveChats();
+  if (chat === mine) {
+    render();
+    els.input.focus();
+  } else {
+    renderChats();
+  }
 }
 
 // ---- events ----
@@ -438,13 +604,11 @@ els.model.addEventListener('change', () => {
   settings.model = els.model.value;
   store.set('jc.settings', settings);
 });
-$('new').addEventListener('click', () => {
-  if (controller) controller.abort();
-  chat = { sessionId: '', messages: [] };
-  saveChat();
-  render();
-  els.input.focus();
-});
+$('new').addEventListener('click', () => show(newChat()));
+els.toggle.addEventListener('click', () => setDrawer(!document.body.classList.contains('drawer')));
+$('backdrop').addEventListener('click', () => setDrawer(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+
 $('open-settings').addEventListener('click', () => {
   els.apiKey.value = settings.apiKey;
   els.system.value = settings.system;
