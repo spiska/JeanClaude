@@ -29,6 +29,11 @@
     padding: 6px 12px; cursor: pointer; min-height: 36px; white-space: nowrap;
   }
   select { min-width: 0; }
+  /* Own arrow instead of the native one, which sits tight against the border. */
+  .select { position: relative; display: inline-flex; min-width: 0; }
+  .select select { appearance: none; -webkit-appearance: none; padding-right: 34px; }
+  .select select option { background: var(--panel); color: var(--text); }
+  .select svg { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted); }
   .btn:hover, select:hover { border-color: var(--muted); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -52,7 +57,7 @@
   #chats .none { color: var(--muted); font-size: 14px; padding: 10px; }
   #backdrop { display: none; }
   #toggle-chats { display: none; }
-  .btn.icon { padding: 0; width: 40px; min-height: 40px; align-items: center; justify-content: center; }
+  .btn.icon { display: inline-flex; padding: 0; width: 40px; min-height: 40px; align-items: center; justify-content: center; }
 
   .app { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   header {
@@ -80,10 +85,13 @@
     #toggle-chats { display: inline-flex; }
     #chats .del { opacity: 1; }
     header { padding: 8px 12px; }
-    header h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-    header select { margin-left: auto; }
     #limits { gap: 8px; }
     .limit .bar { display: none; }
+  }
+  /* Too narrow for the title next to the limits: keep it for screen readers only. */
+  @media (max-width: 460px) {
+    header:has(#limits:not([hidden])) h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    header:has(#limits:not([hidden])) .select { margin-left: auto; }
   }
   @media (prefers-reduced-motion: reduce) { aside { transition: none; } }
 
@@ -151,8 +159,13 @@
     <h1>JeanClaude</h1>
     <div id="limits" role="group" aria-label="Usage limits" hidden></div>
     <label class="sr" for="model">Model</label>
-    <select id="model"></select>
-    <button class="btn" id="open-settings" type="button">Settings</button>
+    <span class="select">
+      <select id="model"></select>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </span>
+    <button class="btn icon" id="open-settings" type="button" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
   </header>
 
   <main id="scroll">
