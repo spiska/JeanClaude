@@ -1,5 +1,13 @@
 # JeanClaude
 
+## Why
+
+A Claude subscription (Pro or Max) comes with the `claude` CLI, but not with an API key. JeanClaude turns the CLI into an HTTP API, so you can use your subscription as an API: to try ideas, test things and build hobby projects without paying for API usage on top.
+
+It is meant for your own experiments, not for production or for apps that other people use — for those, use the [Claude API](https://platform.claude.com) (see also [Security](#security)).
+
+## What it is
+
 A tiny HTTP API in front of the [Claude](https://claude.com/claude-code) CLI. It gives you:
 
 - an **OpenAI-compatible** `POST /v1/chat/completions` (with streaming), so chat apps that accept a custom OpenAI base URL can use Claude as their provider;
