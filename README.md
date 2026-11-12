@@ -35,6 +35,14 @@ npm start
 
 The server listens on `http://127.0.0.1:3000`. `npm run dev` restarts it when a `.js` file changes. The chat page (`public/index.html`) is read once at startup, so restart the server after editing it.
 
+### Tests
+
+```bash
+npm test
+```
+
+The tests start the real server but swap the `claude` CLI for [`test/fake-claude.js`](test/fake-claude.js), which answers instantly and costs nothing, so they need no login. GitHub Actions runs them on every push.
+
 ## Chat in the browser
 
 Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets you pick the model, and shows how long each reply took and what it cost. The cost is `total_cost_usd` from `claude`: what the reply would cost at API prices. On a subscription you are not billed for it; it counts towards the usage limits instead.
