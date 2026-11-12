@@ -20,7 +20,7 @@ Built with [Hono](https://hono.dev).
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22 or newer
 - The `claude` CLI, logged in (`claude auth login`), or a `CLAUDE_CODE_OAUTH_TOKEN` in the environment (see [Run in a container](#run-in-a-container))
 
 ## Run
@@ -41,7 +41,7 @@ The server listens on `http://127.0.0.1:3000`. `npm run dev` restarts it when a 
 npm test
 ```
 
-The tests start the real server but swap the `claude` CLI for [`test/fake-claude.js`](test/fake-claude.js), which answers instantly and costs nothing, so they need no login. GitHub Actions runs them on every push.
+The tests start the real server but swap the `claude` CLI for [`test/fake-claude.js`](test/fake-claude.js), which answers instantly and costs nothing, so they need no login. GitHub Actions runs them on every push, on Node 22 like the container.
 
 ## Chat in the browser
 
@@ -55,7 +55,7 @@ Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets 
 
 ## Run in a container
 
-Every push to `main` builds an image (linux/amd64 and linux/arm64) and publishes it to `ghcr.io/spiska/jeanclaude` as `latest` and `sha-<short commit sha>`; a `v*` git tag is published under its own name. The image contains JeanClaude and the Claude Code CLI, pinned to the version JeanClaude was tested with (`CLAUDE_CODE_VERSION` in the `Containerfile`).
+Every push to `main` builds an image (linux/amd64 and linux/arm64) and publishes it to `ghcr.io/spiska/jeanclaude` as `latest` and `sha-<short commit sha>`; a `v*` git tag is published under its own name. The image contains JeanClaude and the Claude Code CLI, pinned to the version JeanClaude was tested with (`CLAUDE_CODE_VERSION` in the [`Dockerfile`](Dockerfile)).
 
 A server has no browser to log in with, so create a long-lived token on a machine where you are logged in:
 
@@ -78,15 +78,38 @@ JEANCLAUDE_API_KEY=<a long random string>
 ```
 
 ```bash
-podman run -d --name jeanclaude --env-file jeanclaude.env -p 127.0.0.1:3000:3000 ghcr.io/spiska/jeanclaude:latest
+docker run -d --name jeanclaude --restart unless-stopped \
+  --env-file jeanclaude.env \
+  -p 127.0.0.1:3000:3000 \
+  -v jeanclaude-data:/home/node/.claude \
+  ghcr.io/spiska/jeanclaude:latest
 ```
+
+Podman takes the same arguments: replace `docker` with `podman`. To build the image yourself: `docker build -t jeanclaude .`
 
 Notes:
 
 - Inside the container the server listens on `0.0.0.0`; what is reachable from outside is decided by `-p`. The example publishes it on the host's loopback only — put a reverse proxy with HTTPS in front if other machines need it, and always set `JEANCLAUDE_API_KEY`.
+- The `jeanclaude-data` volume keeps the sessions used by the chat page and by `/message` with `sessionId`. Without it they are lost when the container is removed; the chat page still works and replays old chats as text.
 - `claude` runs in `/workspace`, a copy of the repo's `workspace/` folder. To give it your own files and `CLAUDE.md` without rebuilding the image, mount a folder over it: `-v /path/to/my-workspace:/workspace:ro`.
-- Sessions (used by the chat page and by `/message` with `sessionId`) are saved in `/home/node/.claude` and are lost when the container is removed. To keep them, add a volume: `-v jeanclaude-data:/home/node/.claude`. Without it the chat page still works — it replays old chats as text when their session is gone.
-- To build locally: `podman build -t jeanclaude .`
+
+### Deployment reference
+
+Everything a deployment needs — `docker run`, Compose, a Podman pod or a Kubernetes pod:
+
+| What                 | Value |
+| -------------------- | ----- |
+| Image                | `ghcr.io/spiska/jeanclaude:latest` (public; linux/amd64, linux/arm64) |
+| Port                 | `3000/tcp` (HTTP; terminate HTTPS in front of it) |
+| Health check         | `GET /health` → `200 {"ok":true}`, no API key needed. Usable as liveness and readiness probe. |
+| Required secret env  | `CLAUDE_CODE_OAUTH_TOKEN` — from `claude setup-token` |
+| Recommended secret env | `JEANCLAUDE_API_KEY` — clients send it as `Authorization: Bearer <key>` |
+| Optional env         | see [Configuration](#configuration) |
+| User                 | `node`, uid `1000`, gid `1000`. In Kubernetes set `fsGroup: 1000` so mounted volumes are writable. |
+| Persistent volume    | `/home/node/.claude` — read-write, small; holds sessions. Optional. |
+| Content volume       | `/workspace` — your files and `CLAUDE.md` for Claude; can be mounted read-only. Optional (the image has a default). |
+| Replicas             | Run one. Sessions are files in `/home/node/.claude`, so a second replica would not see the first one's sessions unless they share that volume. |
+| Outbound network     | HTTPS to Anthropic (Claude) and to the web (web search and page fetching). |
 
 ## Use it as an OpenAI-compatible provider
 
