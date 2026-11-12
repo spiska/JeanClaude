@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
 export class HttpError extends Error {
   constructor(status, message, extra = {}) {
@@ -15,7 +16,8 @@ export class HttpError extends Error {
 export const CLAUDE_BIN = resolveClaudeBin();
 export const TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000);
 
-// "clean" (default): plain chat — no project context, no tools, no user settings.
+// "clean" (default): a chat assistant working in the repo's workspace/ folder — its
+//   CLAUDE.md, read-only access to its files, web search; none of your own settings.
 // "project": full Claude Code in the directory the server was started from.
 export const MODE = process.env.CLAUDE_MODE ?? 'clean';
 if (MODE !== 'clean' && MODE !== 'project') {
@@ -23,17 +25,13 @@ if (MODE !== 'clean' && MODE !== 'project') {
   process.exit(1);
 }
 const SYSTEM_PROMPT = process.env.CLAUDE_SYSTEM_PROMPT ?? 'You are a helpful assistant.';
-// claude adds its own context even to a replaced system prompt: the working
-// directory, the OS, that it runs on the Agent SDK. Without this note the model
-// tends to introduce itself as a coding agent working in that directory.
-const CLEAN_MODE_NOTE =
-  'You are used as a plain chat assistant, not as a coding agent. You have no tools: you cannot read or ' +
-  'write files, run commands or browse the web. Any working directory, environment or session details you ' +
-  'may see are internal to the app running you — never mention them.';
-// claude still sees the path of its working directory, so clean mode runs it in an
-// empty one. The path must stay stable: sessions can only be resumed from the same cwd.
+// Clean mode's tools. Reading is limited to the working directory (reads elsewhere
+// need approval, which nobody can give in -p mode); the web tools are pre-approved.
+const CLEAN_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
+const CLEAN_ALLOWED_TOOLS = ['WebSearch', 'WebFetch'];
+// The path must stay stable: sessions can only be resumed from the same cwd.
 export const CLAUDE_CWD =
-  process.env.CLAUDE_CWD ?? (MODE === 'clean' ? join(tmpdir(), 'chat-workspace') : process.cwd());
+  process.env.CLAUDE_CWD ?? (MODE === 'clean' ? fileURLToPath(new URL('./workspace', import.meta.url)) : process.cwd());
 if (MODE === 'clean') mkdirSync(CLAUDE_CWD, { recursive: true });
 
 /**
@@ -84,10 +82,10 @@ function spawnClaude({ prompt, stream = false, systemPrompt, model, sessionId, p
   if (stream) args.push('--verbose', '--include-partial-messages');
   if (MODE === 'clean') {
     args.push(
-      // replaces the default prompt (drops git status, project info)
-      '--system-prompt', `${systemPrompt ?? SYSTEM_PROMPT}\n\n${CLEAN_MODE_NOTE}`,
-      '--tools', '', // no file, shell or web tools
-      '--setting-sources', '', // ignore user/project/local settings
+      '--system-prompt', systemPrompt ?? SYSTEM_PROMPT, // replaces Claude Code's own prompt
+      '--tools', CLEAN_TOOLS.join(','), // no shell, no editing
+      '--allowedTools', CLEAN_ALLOWED_TOOLS.join(','),
+      '--setting-sources', 'project', // the workspace's CLAUDE.md and .claude/ only, not your user settings
       '--strict-mcp-config', // no MCP servers
       '--disable-slash-commands', // no skills or commands
     );
@@ -174,6 +172,7 @@ export async function runClaude(options) {
 export async function* streamClaude(options) {
   const { child, exited, stderr } = spawnClaude({ ...options, stream: true });
   let result;
+  let sentText = false;
   try {
     for await (const line of createInterface({ input: child.stdout })) {
       if (!line.trim()) continue;
@@ -183,7 +182,12 @@ export async function* streamClaude(options) {
       } catch {
         continue;
       }
-      if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
+      if (event.type === 'stream_event' && event.event?.type === 'message_start' && sentText) {
+        // A new model turn after a tool call: keep its text apart from what came before.
+        sentText = false;
+        yield { type: 'delta', text: '\n\n' };
+      } else if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
+        sentText = true;
         yield { type: 'delta', text: event.event.delta.text };
       } else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
         yield { type: 'limits', limits: event.rate_limit_info };

@@ -6,7 +6,7 @@ A tiny HTTP API in front of the [Claude](https://claude.com/claude-code) CLI. It
 - a simple `POST /message` that returns the CLI's raw JSON result, optionally streamed;
 - a small **chat page** in the browser at `/`, built on `/message`.
 
-Under the hood each request runs `claude -p` and feeds it the prompt on stdin. By default it runs in **clean mode**: a plain chat with no project context, no tools and no user settings (see [Modes](#modes)).
+Under the hood each request runs `claude -p` and feeds it the prompt on stdin. By default it runs in **clean mode**: a chat assistant working in the [`workspace/`](workspace) folder, where it follows `CLAUDE.md`, can read the files you put there and can search the web — but cannot change anything or run commands, and ignores your own Claude Code settings (see [Modes](#modes)).
 
 Built with [Hono](https://hono.dev).
 
@@ -68,7 +68,7 @@ podman run -d --name jeanclaude --env-file jeanclaude.env -p 127.0.0.1:3000:3000
 Notes:
 
 - Inside the container the server listens on `0.0.0.0`; what is reachable from outside is decided by `-p`. The example publishes it on the host's loopback only — put a reverse proxy with HTTPS in front if other machines need it, and always set `JEANCLAUDE_API_KEY`.
-- `claude` runs in `/workspace`, an empty directory in the image.
+- `claude` runs in `/workspace`, a copy of the repo's `workspace/` folder. To give it your own files and `CLAUDE.md` without rebuilding the image, mount a folder over it: `-v /path/to/my-workspace:/workspace:ro`.
 - Sessions (used by the chat page and by `/message` with `sessionId`) are saved in `/home/node/.claude` and are lost when the container is removed. To keep them, add a volume: `-v jeanclaude-data:/home/node/.claude`. Without it the chat page still works — it replays old chats as text when their session is gone.
 - To build locally: `podman build -t jeanclaude .`
 
@@ -188,7 +188,7 @@ All via environment variables:
 | `CLAUDE_TIMEOUT_MS`    | `300000`                       | Maximum time for one `claude` run (5 minutes). |
 | `CLAUDE_MODE`          | `clean`                        | `clean` or `project` — see [Modes](#modes).    |
 | `CLAUDE_SYSTEM_PROMPT` | `You are a helpful assistant.` | Default system prompt in clean mode.           |
-| `CLAUDE_CWD`           | see Modes (`/workspace` in the container) | Directory `claude` runs in.         |
+| `CLAUDE_CWD`           | `workspace/` in clean mode, the current directory in project mode (`/workspace` in the container) | Directory `claude` runs in. |
 
 `CLAUDE_CODE_OAUTH_TOKEN` is not read by JeanClaude itself; `claude` inherits it and uses it to log in.
 
@@ -198,15 +198,24 @@ When `CLAUDE_BIN` is not set, the server looks for `claude` in `PATH`, then fall
 
 ### `clean` (default)
 
-Claude behaves like a plain chat model. It gets no project context (no git status, no `CLAUDE.md`, no memory), no tools (it cannot read files, run commands or browse), no MCP servers, no skills, and none of your Claude Code settings. Each request adds these flags:
+Claude works as a chat assistant in the repo's [`workspace/`](workspace) folder:
+
+- It follows [`workspace/CLAUDE.md`](workspace/CLAUDE.md), which tells it what it is and how to behave. Edit it to change that.
+- It can read and search the files in `workspace/`. Put reference material there (notes, docs, data) and it will look things up in them. It cannot read files outside the folder.
+- It can search the web and fetch pages.
+- It cannot edit files or run commands. It gets no MCP servers, no skills and none of your own Claude Code settings.
+
+Each request adds these flags:
 
 ```bash
---system-prompt "<system prompt>" --tools "" --setting-sources "" --strict-mcp-config --disable-slash-commands
+--system-prompt "<system prompt>" --tools "Read,Glob,Grep,WebSearch,WebFetch" --allowedTools "WebSearch,WebFetch" --setting-sources project --strict-mcp-config --disable-slash-commands
 ```
 
-The system prompt comes from the request (`system` messages on `/v1/chat/completions`, the `system` field on `/message`), or `CLAUDE_SYSTEM_PROMPT` if it has none.
+The system prompt comes from the request (`system` messages on `/v1/chat/completions`, the `system` field on `/message`), or `CLAUDE_SYSTEM_PROMPT` if it has none. It replaces Claude Code's own prompt; `CLAUDE.md` is added on top of it.
 
-`claude` still adds some context of its own: the path of its working directory, the OS, and that it runs on the Claude Agent SDK. So it runs in an empty folder, `chat-workspace` inside the system temp directory, and JeanClaude appends a short note to every system prompt telling the model it is a plain chat assistant without tools and should not mention that context. Without it, the model tends to introduce itself as a coding agent working in that folder. Sessions can only be resumed from the directory they were started in, so keep `CLAUDE_CWD` stable if you rely on `sessionId`.
+`--setting-sources project` also reads `workspace/.claude/settings.json` if you create one, but its permission rules are ignored until the folder is trusted in an interactive `claude` session — that is why the web tools are allowed with `--allowedTools` instead.
+
+Use `CLAUDE_CWD` to run in another folder. Sessions can only be resumed from the directory they were started in, so keep it stable if you rely on `sessionId`.
 
 ### `project`
 
@@ -218,7 +227,7 @@ CLAUDE_MODE=project npm start
 
 ## Security
 
-By default there is **no authentication**. Anyone who can reach the port can run Claude on your machine, under your account and at your cost — and in `project` mode, have it read the files in its working directory. The server binds to `127.0.0.1` for that reason. Before exposing it to a network, set `JEANCLAUDE_API_KEY` and put it behind HTTPS.
+By default there is **no authentication**. Anyone who can reach the port can run Claude on your machine, under your account and at your cost — have it read the files in its working directory (`workspace/` in clean mode, so don't put secrets there) and fetch web pages. The server binds to `127.0.0.1` for that reason. Before exposing it to a network, set `JEANCLAUDE_API_KEY` and put it behind HTTPS.
 
 The prompt is passed to `claude` on stdin, never through a shell or as a command-line flag, so it cannot inject commands or options.
 

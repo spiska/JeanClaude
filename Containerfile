@@ -12,9 +12,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js claude.js openai.js ./
 COPY public ./public
 
-# Empty directory claude runs in (see "Modes" in the README), and claude's data
-# directory, created here so a volume mounted on it is writable by the node user.
-RUN mkdir /workspace /home/node/.claude && chown node:node /workspace /home/node/.claude
+# The folder claude runs in (see "Modes" in the README). Mount your own over it to
+# give claude other files and instructions.
+COPY --chown=node:node workspace /workspace
+# claude's data directory, created here so a volume mounted on it is writable by node.
+RUN mkdir /home/node/.claude && chown node:node /home/node/.claude
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
