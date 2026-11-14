@@ -5,7 +5,19 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
 import { CLAUDE_BIN, CLAUDE_CWD, HttpError, MODE, runClaude, streamClaude } from './claude.js';
-import { MODELS, chunk, completion, errorBody, newCompletionId, resolveModel, toPrompt } from './openai.js';
+import {
+  MODELS,
+  chunk,
+  completion,
+  errorBody,
+  newCompletionId,
+  newResponseIds,
+  resolveModel,
+  response,
+  responseMessage,
+  responsesToMessages,
+  toPrompt,
+} from './openai.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -76,8 +88,8 @@ async function jsonBody(c) {
 }
 
 /**
- * Streams a claude run to the client as server-sent events. `format` decides what
- * the events look like:
+ * Streams a claude run to the client as server-sent events. `send(data, event?)`
+ * writes one, with an optional event name. `format` decides what they look like:
  *   start(send)         optional, before the first event
  *   event(e, send)      for each { type: 'delta' | 'result' } from claude
  *   end(send)           optional, after the last event
@@ -95,7 +107,7 @@ async function streamResponse(c, options, format) {
 
   return streamSSE(c, async (stream) => {
     stream.onAbort(() => abort.abort());
-    const send = (data) => stream.writeSSE({ data: typeof data === 'string' ? data : JSON.stringify(data) });
+    const send = (data, event) => stream.writeSSE({ event, data: typeof data === 'string' ? data : JSON.stringify(data) });
     try {
       await format.start?.(send);
       for (; !next.done; next = await events.next()) await format.event(next.value, send);
@@ -103,7 +115,7 @@ async function streamResponse(c, options, format) {
     } catch (err) {
       if (abort.signal.aborted) return;
       console.error(`[${c.req.method} ${c.req.path}] stream failed:`, err.message);
-      await send(format.error(err));
+      await format.error(err, send);
     }
   });
 }
@@ -136,7 +148,7 @@ app.post('/message', async (c) => {
       if (e.type === 'limits') return send({ type: 'limits', limits: e.limits });
       return send({ type: 'result', result: e.result });
     },
-    error: (err) => ({ type: 'error', error: err.message }),
+    error: (err, send) => send({ type: 'error', error: err.message }),
   });
 });
 
@@ -178,7 +190,59 @@ app.post('/v1/chat/completions', async (c) => {
       }
     },
     end: (send) => send('[DONE]'),
-    error: (err) => errorBody(err, err instanceof HttpError ? err.status : 500),
+    error: (err, send) => send(errorBody(err, err instanceof HttpError ? err.status : 500)),
+  });
+});
+
+// OpenAI Responses API, text only, with and without streaming. Stateless like
+// chat completions: the client sends the whole conversation in `input`.
+app.post('/v1/responses', async (c) => {
+  const body = await jsonBody(c);
+  const { systemPrompt, prompt } = toPrompt(responsesToMessages(body));
+  const base = {
+    ...newResponseIds(),
+    created: Math.floor(Date.now() / 1000),
+    model: typeof body.model === 'string' ? body.model : 'default',
+    instructions: body.instructions,
+  };
+  const options = { prompt, systemPrompt, model: resolveModel(body.model), persist: false };
+
+  if (!body.stream) {
+    const result = await runClaude({ ...options, signal: c.req.raw.signal });
+    return c.json(response({ ...base, result }));
+  }
+
+  // Each event repeats its type in the data and carries a sequence number.
+  let sequence = 0;
+  const emit = (send, type, fields) => send({ type, sequence_number: sequence++, ...fields }, type);
+  const at = { item_id: base.messageId, output_index: 0, content_index: 0 };
+  let text = '';
+  return streamResponse(c, options, {
+    start: async (send) => {
+      await emit(send, 'response.created', { response: response(base) });
+      await emit(send, 'response.in_progress', { response: response(base) });
+      const item = responseMessage({ messageId: base.messageId, status: 'in_progress' });
+      await emit(send, 'response.output_item.added', { output_index: 0, item });
+      await emit(send, 'response.content_part.added', { ...at, part: { type: 'output_text', text: '', annotations: [] } });
+    },
+    event: async (e, send) => {
+      if (e.type === 'delta') {
+        text += e.text;
+        await emit(send, 'response.output_text.delta', { ...at, delta: e.text, logprobs: [] });
+      } else if (e.type === 'result') {
+        const final = String(e.result.result ?? '');
+        if (!text && final) await emit(send, 'response.output_text.delta', { ...at, delta: final, logprobs: [] });
+        // The stream's text is what the client has seen; it can differ from the
+        // result in the separators between model turns.
+        const done = text || final;
+        await emit(send, 'response.output_text.done', { ...at, text: done, logprobs: [] });
+        await emit(send, 'response.content_part.done', { ...at, part: { type: 'output_text', text: done, annotations: [] } });
+        const finished = response({ ...base, result: { ...e.result, result: done } });
+        await emit(send, 'response.output_item.done', { output_index: 0, item: finished.output[0] });
+        await emit(send, 'response.completed', { response: finished });
+      }
+    },
+    error: (err, send) => emit(send, 'response.failed', { response: response({ ...base, error: err }) }),
   });
 });
 
