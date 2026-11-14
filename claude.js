@@ -26,9 +26,11 @@ if (MODE !== 'clean' && MODE !== 'project') {
 }
 const SYSTEM_PROMPT = process.env.CLAUDE_SYSTEM_PROMPT ?? 'You are a helpful assistant.';
 // Clean mode's tools. Reading is limited to the working directory (reads elsewhere
-// need approval, which nobody can give in -p mode); the web tools are pre-approved.
-const CLEAN_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
-const CLEAN_ALLOWED_TOOLS = ['WebSearch', 'WebFetch'];
+// need approval, which nobody can give in -p mode); the web tools and skills are pre-approved.
+const CLEAN_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'];
+const CLEAN_ALLOWED_TOOLS = ['WebSearch', 'WebFetch', 'Skill'];
+// Only the workspace's own skills (.claude/skills/), not the ones built into the CLI.
+const CLEAN_ENV = { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1', CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL: '1' };
 // The path must stay stable: sessions can only be resumed from the same cwd.
 export const CLAUDE_CWD =
   process.env.CLAUDE_CWD ?? (MODE === 'clean' ? fileURLToPath(new URL('./workspace', import.meta.url)) : process.cwd());
@@ -85,9 +87,8 @@ function spawnClaude({ prompt, stream = false, systemPrompt, model, sessionId, p
       '--system-prompt', systemPrompt ?? SYSTEM_PROMPT, // replaces Claude Code's own prompt
       '--tools', CLEAN_TOOLS.join(','), // no shell, no editing
       '--allowedTools', CLEAN_ALLOWED_TOOLS.join(','),
-      '--setting-sources', 'project', // the workspace's CLAUDE.md and .claude/ only, not your user settings
+      '--setting-sources', 'project', // the workspace's CLAUDE.md and .claude/ (skills), not your user settings
       '--strict-mcp-config', // no MCP servers
-      '--disable-slash-commands', // no skills or commands
     );
   } else if (systemPrompt) {
     args.push('--append-system-prompt', systemPrompt);
@@ -98,6 +99,7 @@ function spawnClaude({ prompt, stream = false, systemPrompt, model, sessionId, p
 
   const child = spawn(CLAUDE_BIN, args, {
     cwd: CLAUDE_CWD,
+    env: MODE === 'clean' ? { ...process.env, ...CLEAN_ENV } : process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: TIMEOUT_MS,
     signal,

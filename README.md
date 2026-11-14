@@ -10,7 +10,7 @@ It is meant for your own experiments, not for production or for apps that other 
 
 A tiny HTTP API in front of the [Claude](https://claude.com/claude-code) CLI. It gives you:
 
-- an **OpenAI-compatible** `POST /v1/chat/completions` (with streaming), so chat apps that accept a custom OpenAI base URL can use Claude as their provider;
+- an **OpenAI-compatible** `POST /v1/chat/completions` and `POST /v1/responses` (both with streaming), so apps that accept a custom OpenAI base URL can use Claude as their provider;
 - a simple `POST /message` that returns the CLI's raw JSON result, optionally streamed;
 - a small **chat page** in the browser at `/`, built on `/message`.
 
@@ -152,6 +152,21 @@ If the server uses `JEANCLAUDE_API_KEY`, add `-H "authorization: Bearer $JEANCLA
 
 The endpoint is stateless: the client sends the whole conversation every time and nothing is saved to disk.
 
+### Responses API
+
+Newer OpenAI clients use `POST /v1/responses` instead. It works the same way, in that API's format:
+
+```bash
+curl -s localhost:3000/v1/responses \
+  -H 'content-type: application/json' \
+  -d '{"model":"sonnet","instructions":"Answer briefly.","input":"hello, how are you?"}'
+```
+
+- `input` is a string or a list of messages (`input_text` / `output_text` parts); `instructions` becomes the system prompt.
+- `"stream": true` sends the standard events, from `response.created` through `response.output_text.delta` to `response.completed` (or `response.failed`).
+- It is stateless too: `previous_response_id` is rejected with 400, so the client has to send the whole conversation in `input` (most do when `store` is off).
+- The same limits as above apply: text only, no tool calling (`tools` is ignored; earlier `function_call` items in `input` are passed on as text), sampling parameters are ignored.
+
 ## `POST /message`
 
 JeanClaude's own endpoint. One message in, the CLI's result object out — including cost, usage and a session id you can use to continue the conversation.
@@ -242,17 +257,35 @@ Claude works as a chat assistant in the repo's [`workspace/`](workspace) folder:
 - It follows [`workspace/CLAUDE.md`](workspace/CLAUDE.md), which tells it what it is and how to behave. Edit it to change that.
 - It can read and search the files in `workspace/`. Put reference material there (notes, docs, data) and it will look things up in them. It cannot read files outside the folder.
 - It can search the web and fetch pages.
-- It cannot edit files or run commands. It gets no MCP servers, no skills and none of your own Claude Code settings.
+- It can use the skills in `workspace/.claude/skills/` (see [Skills](#skills)).
+- It cannot edit files or run commands. It gets no MCP servers, none of the skills built into Claude Code and none of your own Claude Code settings or skills.
 
 Each request adds these flags:
 
 ```bash
---system-prompt "<system prompt>" --tools "Read,Glob,Grep,WebSearch,WebFetch" --allowedTools "WebSearch,WebFetch" --setting-sources project --strict-mcp-config --disable-slash-commands
+--system-prompt "<system prompt>" --tools "Read,Glob,Grep,WebSearch,WebFetch,Skill" --allowedTools "WebSearch,WebFetch,Skill" --setting-sources project --strict-mcp-config
 ```
+
+and sets `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1` and `CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL=1` so only the workspace's skills show up.
 
 The system prompt comes from the request (`system` messages on `/v1/chat/completions`, the `system` field on `/message`), or `CLAUDE_SYSTEM_PROMPT` if it has none. It replaces Claude Code's own prompt; `CLAUDE.md` is added on top of it.
 
 `--setting-sources project` also reads `workspace/.claude/settings.json` if you create one, but its permission rules are ignored until the folder is trusted in an interactive `claude` session — that is why the web tools are allowed with `--allowedTools` instead.
+
+#### Skills
+
+A skill is a folder with a `SKILL.md`: a name and a description in front matter, then instructions. Claude sees the descriptions and loads a skill's instructions when a question matches one:
+
+```markdown
+<!-- workspace/.claude/skills/glossary/SKILL.md -->
+---
+name: glossary
+description: Explains our team's abbreviations. Use when someone asks what an abbreviation means.
+---
+Look the abbreviation up in glossary.md next to this file and answer with its meaning and one example.
+```
+
+Skills here can only use clean mode's tools — reading files in the workspace and the web. Scripts in a skill folder can be read but not run. In the container, put skills in `.claude/skills/` of the folder you mount over `/workspace`.
 
 Use `CLAUDE_CWD` to run in another folder. Sessions can only be resumed from the directory they were started in, so keep it stable if you rely on `sessionId`.
 

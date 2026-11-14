@@ -40,6 +40,18 @@ async function startServer(env = {}) {
 const post = (url, body, headers = {}) =>
   fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
+/** Reads a server-sent events response into `{ event, data }` pairs (data JSON parsed). */
+async function namedEvents(res) {
+  const text = await res.text();
+  return text
+    .split('\n\n')
+    .filter((block) => block.trim())
+    .map((block) => {
+      const field = (name) => block.split('\n').find((l) => l.startsWith(`${name}:`))?.slice(name.length + 1).trim();
+      return { event: field('event'), data: JSON.parse(field('data')) };
+    });
+}
+
 /** Reads a server-sent events response into a list of `data:` payloads (JSON parsed where possible). */
 async function events(res) {
   const text = await res.text();
@@ -91,7 +103,7 @@ describe('server', () => {
       assert.equal(flag('--resume'), 'abc');
       assert.equal(flag('--model'), 'haiku');
       assert.equal(flag('--system-prompt'), 'Be brief.');
-      assert.equal(flag('--tools'), 'Read,Glob,Grep,WebSearch,WebFetch');
+      assert.equal(flag('--tools'), 'Read,Glob,Grep,WebSearch,WebFetch,Skill');
       assert.equal(flag('--setting-sources'), 'project');
       assert.ok(args.includes('--strict-mcp-config'));
       assert.ok(!args.includes('hi'), 'the prompt goes in on stdin, not as an argument');
@@ -176,6 +188,60 @@ describe('server', () => {
       assert.equal(text, 'echo: hello');
       assert.equal(chunks.filter((c) => c.choices[0]?.finish_reason === 'stop').length, 1);
       assert.equal(chunks.at(-1).usage.total_tokens, 18);
+    });
+
+    it('answers a Responses API request', async () => {
+      const res = await post(`${server.url}/v1/responses`, { model: 'haiku', instructions: 'Be brief.', input: 'hello' });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.object, 'response');
+      assert.equal(body.status, 'completed');
+      assert.equal(body.output[0].content[0].text, 'echo: hello');
+      assert.equal(body.usage.total_tokens, 18);
+      assert.equal(body.instructions, 'Be brief.');
+    });
+
+    it('streams Responses API events', async () => {
+      const list = await namedEvents(
+        await post(`${server.url}/v1/responses`, { stream: true, input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }] }),
+      );
+      assert.deepEqual(
+        list.map((e) => e.event),
+        [
+          'response.created',
+          'response.in_progress',
+          'response.output_item.added',
+          'response.content_part.added',
+          'response.output_text.delta',
+          'response.output_text.delta',
+          'response.output_text.done',
+          'response.content_part.done',
+          'response.output_item.done',
+          'response.completed',
+        ],
+      );
+      assert.ok(list.every((e, i) => e.data.type === e.event && e.data.sequence_number === i));
+      const text = list.filter((e) => e.event === 'response.output_text.delta').map((e) => e.data.delta).join('');
+      assert.equal(text, 'echo: hello');
+      const done = list.at(-1).data.response;
+      assert.equal(done.status, 'completed');
+      assert.equal(done.output[0].content[0].text, 'echo: hello');
+      assert.equal(done.usage.total_tokens, 18);
+    });
+
+    it('reports a failed Responses API stream as response.failed', async () => {
+      const list = await namedEvents(await post(`${server.url}/v1/responses`, { stream: true, input: 'FAIL' }));
+      assert.equal(list.at(-1).event, 'response.failed');
+      assert.equal(list.at(-1).data.response.error.message, 'something went wrong');
+      const res = await post(`${server.url}/v1/responses`, { input: 'FAIL' });
+      assert.equal(res.status, 502);
+      assert.equal((await res.json()).error.type, 'server_error');
+    });
+
+    it('rejects previous_response_id', async () => {
+      const res = await post(`${server.url}/v1/responses`, { input: 'hi', previous_response_id: 'resp_1' });
+      assert.equal(res.status, 400);
+      assert.match((await res.json()).error.message, /previous_response_id/);
     });
 
     it('rejects unsupported content with an OpenAI error', async () => {
