@@ -4,6 +4,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
+import { rejected, snapshot } from './activity.js';
 import { CLAUDE_BIN, CLAUDE_CWD, HttpError, MODE, runClaude, streamClaude } from './claude.js';
 import {
   MODELS,
@@ -24,6 +25,7 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 const API_KEY = process.env.JEANCLAUDE_API_KEY;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const CHAT_PAGE = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
+const DASHBOARD_PAGE = readFileSync(new URL('./public/dashboard.html', import.meta.url), 'utf8');
 // The page is self-contained (inline CSS and JS) and only talks to this server.
 const CHAT_PAGE_CSP =
   "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -31,30 +33,41 @@ const CHAT_PAGE_CSP =
 const app = new Hono();
 
 const isOpenAiPath = (c) => c.req.path.startsWith('/v1/');
+// HTTP errors go to the activity log, except the browser's favicon request and the
+// dashboard's own polling (a wrong key there would log a 401 every few seconds).
+const UNLOGGED_PATHS = new Set(['/favicon.ico', '/activity']);
+const logRejected = (c, status, err) => {
+  if (!UNLOGGED_PATHS.has(c.req.path)) rejected({ method: c.req.method, path: c.req.path, status, message: err.message, err });
+};
 
 app.onError((err, c) => {
   const status = err instanceof HttpError ? err.status : 500;
   if (status >= 500) console.error(`[${c.req.method} ${c.req.path}]`, err.message);
+  logRejected(c, status, err);
   if (isOpenAiPath(c)) return c.json(errorBody(err, status), status);
   return c.json({ error: err.message, ...(err.extra ?? {}) }, status);
 });
 
 app.notFound((c) => {
   const err = new HttpError(404, 'Not found');
+  logRejected(c, 404, err);
   return c.json(isOpenAiPath(c) ? errorBody(err, 404) : { error: err.message }, 404);
 });
 
 app.get('/health', (c) => c.json({ ok: true }));
 
-// Browser chat client. Served without the API key — it holds no secrets; the key
-// is entered in the page and sent with its API calls.
-app.get('/', (c) => {
+// The browser pages: the chat client and the activity dashboard. Served without
+// the API key — they hold no secrets; the key is entered in the chat's settings
+// and sent with their API calls.
+const page = (html) => (c) => {
   c.header('Content-Security-Policy', CHAT_PAGE_CSP);
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Cache-Control', 'no-cache');
-  return c.html(CHAT_PAGE);
-});
+  return c.html(html);
+};
+app.get('/', page(CHAT_PAGE));
+app.get('/dashboard', page(DASHBOARD_PAGE));
 
 // Optional shared secret. OpenAI clients send it as "Authorization: Bearer <key>".
 app.use(async (c, next) => {
@@ -76,6 +89,12 @@ app.use(
     },
   }),
 );
+
+// What the server is doing and has done since it started, for /dashboard.
+app.get('/activity', (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json({ mode: MODE, ...snapshot() });
+});
 
 async function jsonBody(c) {
   try {
@@ -131,6 +150,7 @@ app.post('/message', async (c) => {
     if (value !== undefined && typeof value !== 'string') throw new HttpError(400, `"${name}" must be a string`);
   }
   const options = {
+    source: '/message',
     prompt: message,
     sessionId: sessionId || undefined,
     model: resolveModel(model),
@@ -169,7 +189,7 @@ app.post('/v1/chat/completions', async (c) => {
     created: Math.floor(Date.now() / 1000),
     model: typeof body.model === 'string' ? body.model : 'default',
   };
-  const options = { prompt, systemPrompt, model: resolveModel(body.model), persist: false };
+  const options = { source: '/v1/chat/completions', prompt, systemPrompt, model: resolveModel(body.model), persist: false };
 
   if (!body.stream) {
     const result = await runClaude({ ...options, signal: c.req.raw.signal });
@@ -205,7 +225,7 @@ app.post('/v1/responses', async (c) => {
     model: typeof body.model === 'string' ? body.model : 'default',
     instructions: body.instructions,
   };
-  const options = { prompt, systemPrompt, model: resolveModel(body.model), persist: false };
+  const options = { source: '/v1/responses', prompt, systemPrompt, model: resolveModel(body.model), persist: false };
 
   if (!body.stream) {
     const result = await runClaude({ ...options, signal: c.req.raw.signal });

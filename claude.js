@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import * as activity from './activity.js';
 
 export class HttpError extends Error {
   constructor(status, message, extra = {}) {
@@ -78,6 +79,7 @@ function resolveClaudeBin() {
  * @param {string} [o.sessionId]      passed to --resume
  * @param {boolean} [o.persist]       false = don't save the session to disk
  * @param {AbortSignal} [o.signal]    kills the process when aborted
+ * @param {string} [o.source]         the endpoint asking, for the activity log
  */
 function spawnClaude({ prompt, stream = false, systemPrompt, model, sessionId, persist = true, signal }) {
   const args = ['-p', '--output-format', stream ? 'stream-json' : 'json'];
@@ -139,6 +141,18 @@ function failureReason(result) {
 
 /** Runs claude to completion and returns its parsed JSON result object. */
 export async function runClaude(options) {
+  const run = activity.begin({ ...options, stream: false });
+  try {
+    const result = await runClaudeOnce(options);
+    run.finish(result);
+    return result;
+  } catch (err) {
+    run.fail(err);
+    throw err;
+  }
+}
+
+async function runClaudeOnce(options) {
   const { child, exited, stderr } = spawnClaude({ ...options, stream: false });
   let stdout = '';
   child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
@@ -172,6 +186,22 @@ export async function runClaude(options) {
  * Throws HttpError if claude fails.
  */
 export async function* streamClaude(options) {
+  const run = activity.begin({ ...options, stream: true });
+  try {
+    for await (const event of streamClaudeOnce(options)) {
+      if (event.type === 'limits') activity.setLimits(event.limits);
+      if (event.type === 'result') run.finish(event.result);
+      yield event;
+    }
+  } catch (err) {
+    run.fail(err);
+    throw err;
+  } finally {
+    run.cancel(); // no-op if the run already ended
+  }
+}
+
+async function* streamClaudeOnce(options) {
   const { child, exited, stderr } = spawnClaude({ ...options, stream: true });
   let result;
   let sentText = false;

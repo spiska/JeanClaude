@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JeanClaude Activity</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f5f1; --panel: #ffffff; --text: #1d1c1a; --muted: #6f6c66; --line: #e2dfd8; --grid: #eeece6;
+    --accent: #2563eb; --accent-text: #ffffff; --danger: #b3261e; --good: #1a7f37; --hover: #ece9e1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1917; --panel: #232220; --text: #ecebe7; --muted: #a09c94; --line: #36342f; --grid: #2d2c29;
+      --accent: #6ea8fe; --accent-text: #10213d; --danger: #f2b8b5; --good: #7ee2a0; --hover: #2f2d29;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  button, input { font: inherit; color: inherit; }
+  .btn {
+    background: transparent; border: 1px solid var(--line); border-radius: 8px;
+    padding: 4px 12px; min-height: 32px; cursor: pointer; font-size: 14px; color: inherit; text-decoration: none;
+    display: inline-flex; align-items: center;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  #status { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-right: auto; }
+  #status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  #status.live .dot { background: var(--good); }
+  #status.down .dot { background: var(--danger); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+  section h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; display: flex; align-items: baseline; gap: 8px; }
+  section h2 .muted { font-weight: 400; font-size: 13px; }
+
+  /* ---- stat tiles ---- */
+  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .tile { padding: 14px 16px; }
+  .tile .label { font-size: 13px; color: var(--muted); }
+  .tile .value { font-size: 28px; font-weight: 600; line-height: 1.25; margin-top: 2px; }
+  .tile .sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .tile .value.bad { color: var(--danger); }
+
+  .row2 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+
+  /* ---- hourly chart ---- */
+  .legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); margin: -4px 0 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: 180px; overflow: visible; }
+  .chart .gridline { stroke: var(--grid); stroke-width: 1; }
+  .chart .axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .chart .ok { fill: var(--accent); }
+  .chart .err { fill: var(--danger); }
+  .chart .hit { fill: transparent; cursor: default; }
+  .chart .hit:hover { fill: var(--text); opacity: .06; }
+  .tip {
+    position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+    white-space: nowrap; transform: translate(-50%, -100%); z-index: 2;
+  }
+  .tip[hidden] { display: none; }
+
+  /* ---- limits ---- */
+  .limit { margin-bottom: 14px; }
+  .limit:last-child { margin-bottom: 0; }
+  .limit .top { display: flex; justify-content: space-between; font-size: 13.5px; }
+  .limit .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 6px 0 4px; }
+  .limit .fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .limit.high .fill { background: var(--danger); }
+  .limit .when { font-size: 12.5px; color: var(--muted); }
+
+  /* ---- tables ---- */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); font-size: 12.5px; }
+  td.r, th.r { text-align: right; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: var(--hover); }
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--good); }
+  .pill.error { color: var(--danger); }
+  .pill.cancelled { color: var(--muted); }
+  .pill.rejected { color: var(--danger); }
+  td.err { white-space: normal; color: var(--danger); font-size: 12.5px; min-width: 200px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+  .spinner {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--accent); border-right-color: transparent; animation: spin .9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+  /* ---- API key prompt ---- */
+  #auth { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #auth[hidden] { display: none; }
+  #auth input { flex: 1; min-width: 180px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; background: var(--bg); }
+
+  @media (max-width: 860px) {
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .row2 { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 420px) {
+    .tile .value { font-size: 23px; }
+    .tiles { gap: 10px; }
+    main { gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>JeanClaude · Activity</h1>
+  <div id="status" role="status"><span class="dot"></span><span id="status-text">Connecting…</span></div>
+  <a class="btn" href="./">Chat</a>
+</header>
+
+<main>
+  <section id="auth" hidden>
+    <label for="key">This server needs its API key.</label>
+    <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="API key">
+    <button class="btn primary" id="save-key" type="button">Use key</button>
+  </section>
+
+  <div class="tiles">
+    <section class="tile"><div class="label">Running now</div><div class="value num" id="t-running">–</div><div class="sub" id="t-running-sub">&nbsp;</div></section>
+    <section class="tile"><div class="label">Requests</div><div class="value num" id="t-requests">–</div><div class="sub num" id="t-requests-sub">&nbsp;</div></section>
+    <section class="tile"><div class="label">Tokens out</div><div class="value num" id="t-tokens">–</div><div class="sub num" id="t-tokens-sub">&nbsp;</div></section>
+    <section class="tile"><div class="label">API-equivalent cost</div><div class="value num" id="t-cost">–</div><div class="sub">covered by the subscription</div></section>
+  </div>
+
+  <div class="row2">
+    <section>
+      <h2>Requests per hour <span class="muted">last 24 hours</span></h2>
+      <div class="legend"><span><i style="background: var(--accent)"></i>Answered</span><span><i style="background: var(--danger)"></i>Failed</span></div>
+      <div class="chart" id="chart"><div class="tip" id="tip" hidden></div></div>
+    </section>
+    <section>
+      <h2>Usage limits <span class="muted" id="limits-at"></span></h2>
+      <div id="limits"><div class="empty">Not reported yet. claude reports them with streamed replies.</div></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Running now</h2>
+    <div class="tablewrap" id="running"></div>
+  </section>
+
+  <section>
+    <h2>Recent requests <span class="muted" id="recent-count"></span></h2>
+    <div class="tablewrap" id="recent"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const POLL_MS = 3000;
+const LIMIT_NAMES = { five_hour: '5-hour limit', seven_day: 'Weekly limit', seven_day_opus: 'Weekly limit (Opus)', seven_day_sonnet: 'Weekly limit (Sonnet)' };
+
+// The chat page keeps its settings (with the API key) under this key; same origin, so share it.
+function settings() { try { return JSON.parse(localStorage.getItem('jc.settings')) ?? {}; } catch { return {}; } }
+function saveKey(apiKey) { try { localStorage.setItem('jc.settings', JSON.stringify({ ...settings(), apiKey })); } catch { /* private mode */ } }
+let sessionKey = '';
+
+let data = null;
+let clockSkew = 0; // server time minus browser time
+let lastOk = 0;
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') node.className = v;
+    else node.setAttribute(k, v);
+  }
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
+}
+
+const compact = (n) => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k' : String(n);
+const money = (n) => '$' + (n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(2) : n.toFixed(4));
+function duration(ms) {
+  if (ms < 1000) return ms + ' ms';
+  const s = ms / 1000;
+  if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + ' s';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ${Math.floor(s % 60)} s`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h} h ${m % 60} min` : `${Math.floor(h / 24)} d ${h % 24} h`;
+}
+const time = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function when(ms) {
+  const d = new Date(ms);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+const now = () => Date.now() + clockSkew;
+const modelOf = (r) => (r.models?.length ? r.models.join(', ') : r.model ?? '–');
+const STATUS_TEXT = { ok: 'OK', error: 'Failed', cancelled: 'Cancelled' };
+const statusText = (r) => (r.status === 'rejected' ? `HTTP ${r.httpStatus}` : STATUS_TEXT[r.status] ?? r.status);
+
+async function poll() {
+  const key = sessionKey || settings().apiKey;
+  try {
+    const res = await fetch('activity', { headers: key ? { authorization: `Bearer ${key}` } : {}, cache: 'no-store' });
+    if (res.status === 401) {
+      clearInterval(timer); // until a key is entered
+      $('auth').hidden = false;
+      setStatus('down', 'API key needed');
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+    clockSkew = data.now - Date.now();
+    lastOk = Date.now();
+    $('auth').hidden = true;
+    render();
+  } catch {
+    setStatus('down', lastOk ? `Server unreachable · last update ${time(lastOk)}` : 'Server unreachable');
+  }
+}
+
+function setStatus(kind, text) {
+  $('status').className = kind;
+  $('status-text').textContent = text;
+}
+
+function render() {
+  const { totals, running, recent } = data;
+  setStatus('live', `Live · up ${duration(now() - data.startedAt)} · ${data.mode} mode`);
+
+  $('t-running').textContent = running.length;
+  $('t-running-sub').textContent = running.length ? `longest ${duration(now() - running[0].startedAt)}` : 'idle';
+  $('t-requests').textContent = compact(totals.requests);
+  const failed = totals.errors;
+  $('t-requests-sub').textContent = `${failed} failed` + (totals.rejected ? ` (${totals.rejected} HTTP)` : '') + ` · ${totals.cancelled} cancelled`;
+  $('t-requests-sub').style.color = failed ? 'var(--danger)' : '';
+  $('t-tokens').textContent = compact(totals.outputTokens);
+  const inTokens = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
+  $('t-tokens-sub').textContent = `${compact(inTokens)} in (${compact(totals.cacheReadTokens)} from cache)`;
+  $('t-cost').textContent = money(totals.costUsd);
+
+  renderChart(data.hourly);
+  renderLimits(data.limits);
+  renderRunning(running);
+  renderRecent(recent);
+}
+
+// ---- requests per hour ----
+let chartKey = '';
+function renderChart(hours) {
+  const box = $('chart');
+  // Drawn at its real pixel width, so the text is never stretched.
+  const W = Math.max(240, Math.round(box.clientWidth));
+  const key = W + JSON.stringify(hours);
+  if (key === chartKey) return; // unchanged: keep the hover state
+  chartKey = key;
+  box.querySelector('svg')?.remove();
+  const H = 180, left = 28, bottom = 20, top = 6;
+  const max = Math.max(4, ...hours.map((h) => h.requests));
+  const step = niceStep(max);
+  const yMax = Math.ceil(max / step) * step;
+  const plotH = H - bottom - top, plotW = W - left;
+  const slot = plotW / hours.length, barW = Math.max(4, slot - 4);
+  const y = (v) => top + plotH - (v / yMax) * plotH;
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('role', 'img');
+  const total = hours.reduce((s, h) => s + h.requests, 0);
+  svg.setAttribute('aria-label', `Requests per hour over the last 24 hours, ${total} in all`);
+  const add = (tag, attrs, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    svg.append(n);
+    return n;
+  };
+  for (let v = 0; v <= yMax; v += step) {
+    add('line', { class: 'gridline', x1: left, x2: W, y1: y(v), y2: y(v) });
+    add('text', { class: 'axis', x: left - 6, y: y(v) + 4, 'text-anchor': 'end' }, v);
+  }
+  // Rounded data-end only: a path with the top corners rounded, the base square.
+  const bar = (x, y0, y1, cls, roundTop) => {
+    const h = y1 - y0;
+    if (h <= 0) return;
+    const r = roundTop ? Math.min(3, h, barW / 2) : 0;
+    add('path', { class: cls, d: `M${x},${y1} V${y0 + r} Q${x},${y0} ${x + r},${y0} H${x + barW - r} Q${x + barW},${y0} ${x + barW},${y0 + r} V${y1} Z` });
+  };
+  hours.forEach((h, i) => {
+    const x = left + i * slot + (slot - barW) / 2;
+    const ok = h.requests - h.errors;
+    const base = y(0);
+    const okTop = y(ok);
+    bar(x, okTop, base, 'ok', !h.errors);
+    // 2px gap between the answered and failed parts.
+    if (h.errors) bar(x, y(h.requests), ok ? okTop - 2 : base, 'err', true);
+    const date = new Date(h.hour);
+    if (date.getHours() % (W < 420 ? 6 : 3) === 0) {
+      add('text', { class: 'axis', x: x + barW / 2, y: H - 4, 'text-anchor': 'middle' }, String(date.getHours()).padStart(2, '0') + ':00');
+    }
+    const hit = add('rect', { class: 'hit', x: left + i * slot, y: top, width: slot, height: plotH });
+    hit.addEventListener('mouseenter', () => showTip(h, left + i * slot + slot / 2, Math.min(okTop, y(h.requests))));
+    hit.addEventListener('mouseleave', () => ($('tip').hidden = true));
+  });
+  box.prepend(svg);
+}
+
+function niceStep(max) {
+  const raw = max / 4;
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  return [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= raw);
+}
+
+function showTip(h, x, yTop) {
+  const box = $('chart'), tip = $('tip');
+  const svg = box.querySelector('svg');
+  const from = new Date(h.hour), to = new Date(h.hour + 3600e3);
+  const hh = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  tip.replaceChildren(
+    el('strong', {}, `${hh(from)}–${hh(to)}`), el('br'),
+    `${h.requests} request${h.requests === 1 ? '' : 's'}`,
+    h.errors ? ` · ${h.errors} failed` : '', el('br'),
+    `${compact(h.outputTokens)} tokens out`,
+  );
+  tip.hidden = false;
+  const half = tip.offsetWidth / 2;
+  tip.style.left = Math.min(Math.max(x, half), svg.clientWidth - half) + 'px';
+  tip.style.top = Math.max(yTop - 8, tip.offsetHeight) + 'px';
+}
+
+// ---- limits ----
+function renderLimits(limits) {
+  const info = limits?.info;
+  const windows = !info ? [] : info.unifiedWindows && typeof info.unifiedWindows === 'object'
+    ? Object.entries(info.unifiedWindows)
+    : info.rateLimitType && typeof info.utilization === 'number' ? [[info.rateLimitType, info]] : [];
+  const items = windows.filter(([, w]) => w && typeof w.utilization === 'number');
+  if (!items.length) return;
+  $('limits-at').textContent = `as of ${when(limits.at)}`;
+  $('limits').replaceChildren(...items.map(([key, w]) => {
+    const expired = typeof w.resetsAt === 'number' && w.resetsAt * 1000 <= now();
+    const pct = Math.round(Math.min(Math.max(w.utilization, 0), 1) * 100);
+    const high = !expired && (pct >= 90 || (w.status && w.status !== 'allowed'));
+    const fill = el('span', { class: 'fill' });
+    fill.style.width = (expired ? 0 : pct) + '%';
+    return el('div', { class: 'limit' + (high ? ' high' : '') },
+      el('div', { class: 'top' }, el('span', {}, LIMIT_NAMES[key] ?? key.replace(/_/g, ' ')), el('strong', { class: 'num' }, expired ? '–' : pct + '%')),
+      el('div', { class: 'bar', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': expired ? 0 : pct, 'aria-label': LIMIT_NAMES[key] ?? key }, fill),
+      el('div', { class: 'when' }, expired ? 'Reset since — the next streamed reply brings a fresh number' : typeof w.resetsAt === 'number' ? `Resets ${when(w.resetsAt * 1000)}` : ''),
+    );
+  }));
+}
+
+// ---- tables ----
+function table(head, rows) {
+  return el('table', {},
+    el('thead', {}, el('tr', {}, ...head.map(([label, cls]) => el('th', cls ? { class: cls } : {}, label)))),
+    el('tbody', {}, ...rows),
+  );
+}
+
+function renderRunning(running) {
+  const box = $('running');
+  if (!running.length) return box.replaceChildren(el('div', { class: 'empty' }, 'Nothing is running.'));
+  box.replaceChildren(table(
+    [['Started'], ['Endpoint'], ['Model'], ['Mode'], ['Prompt', 'r'], ['Elapsed', 'r']],
+    running.map((r) => el('tr', {},
+      el('td', { class: 'num' }, time(r.startedAt)),
+      el('td', {}, r.source),
+      el('td', {}, r.model),
+      el('td', {}, (r.stream ? 'stream' : 'single') + (r.resumed ? ' · resumed' : '')),
+      el('td', { class: 'r num' }, compact(r.promptChars) + ' chars'),
+      el('td', { class: 'r num' }, el('span', { class: 'spinner', 'aria-hidden': 'true' }), ' ', el('span', { 'data-since': r.startedAt }, duration(now() - r.startedAt))),
+    )),
+  ));
+}
+
+function renderRecent(recent) {
+  $('recent-count').textContent = recent.length ? `last ${recent.length}, newest first` : '';
+  const box = $('recent');
+  if (!recent.length) return box.replaceChildren(el('div', { class: 'empty' }, 'No requests since the server started.'));
+  const rows = [];
+  for (const r of recent) {
+    const u = r.usage;
+    rows.push(el('tr', {},
+      el('td', { class: 'num' }, new Date(r.startedAt).toDateString() === new Date().toDateString() ? time(r.startedAt) : when(r.startedAt)),
+      el('td', {}, r.source),
+      el('td', {}, modelOf(r)),
+      el('td', {}, r.method ?? (r.stream ? 'stream' : 'single')),
+      el('td', { class: 'r num' }, duration(r.durationMs)),
+      el('td', { class: 'r num' }, u ? compact(u.input + u.cacheRead + u.cacheWrite) : '–'),
+      el('td', { class: 'r num' }, u ? compact(u.output) : '–'),
+      el('td', { class: 'r num' }, u ? money(r.costUsd) : '–'),
+      el('td', {}, el('span', { class: 'pill ' + r.status, title: r.httpStatus ? `HTTP ${r.httpStatus}` : '' }, statusText(r))),
+    ));
+    if (r.error) rows.push(el('tr', {}, el('td', { class: 'err', colspan: 9 }, r.error)));
+  }
+  box.replaceChildren(table(
+    [['Time'], ['Endpoint'], ['Model'], ['Mode'], ['Duration', 'r'], ['Tokens in', 'r'], ['Tokens out', 'r'], ['Cost', 'r'], ['Status']],
+    rows,
+  ));
+}
+
+window.addEventListener('resize', () => { if (data) renderChart(data.hourly); });
+
+// Elapsed times of running requests tick between polls.
+setInterval(() => {
+  for (const span of document.querySelectorAll('[data-since]')) span.textContent = duration(now() - Number(span.dataset.since));
+}, 1000);
+
+$('save-key').addEventListener('click', () => {
+  sessionKey = $('key').value.trim();
+  saveKey(sessionKey);
+  poll();
+  schedule();
+});
+$('key').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save-key').click(); });
+
+let timer;
+function schedule() {
+  clearInterval(timer);
+  if (!document.hidden) timer = setInterval(poll, POLL_MS);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); schedule(); });
+poll();
+schedule();
+</script>
+</body>
+</html>

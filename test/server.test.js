@@ -266,8 +266,88 @@ describe('server with JEANCLAUDE_API_KEY', () => {
     assert.equal((await fetch(`${server.url}/v1/models`)).status, 401);
   });
 
-  it('leaves the chat page and /health open', async () => {
+  it('leaves the chat page, the dashboard and /health open', async () => {
     assert.equal((await fetch(`${server.url}/`)).status, 200);
+    assert.equal((await fetch(`${server.url}/dashboard`)).status, 200);
     assert.equal((await fetch(`${server.url}/health`)).status, 200);
+  });
+
+  it('requires the key for the activity data', async () => {
+    assert.equal((await fetch(`${server.url}/activity`)).status, 401);
+    const res = await fetch(`${server.url}/activity`, { headers: { authorization: 'Bearer secret' } });
+    assert.equal(res.status, 200);
+    // The 401s from the first test are in the log; the one from /activity is not.
+    const recent = (await res.json()).recent.filter((r) => r.httpStatus === 401);
+    assert.ok(recent.length >= 2);
+    assert.ok(recent.every((r) => r.source !== '/activity'));
+  });
+});
+
+describe('activity', () => {
+  let server;
+  before(async () => (server = await startServer()));
+  after(() => server.stop());
+
+  const activity = async () => (await fetch(`${server.url}/activity`)).json();
+
+  it('serves the dashboard page', async () => {
+    const res = await fetch(`${server.url}/dashboard`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-security-policy'), /default-src 'none'/);
+    assert.match(await res.text(), /<title>JeanClaude Activity<\/title>/);
+  });
+
+  it('starts empty', async () => {
+    const a = await activity();
+    assert.equal(a.mode, 'clean');
+    assert.equal(a.totals.requests, 0);
+    assert.deepEqual(a.running, []);
+    assert.deepEqual(a.recent, []);
+    assert.equal(a.hourly.length, 24);
+    assert.equal(a.limits, null);
+  });
+
+  it('records finished, failed and streamed runs without their text', async () => {
+    await post(`${server.url}/message`, { message: 'secret prompt' });
+    await post(`${server.url}/v1/chat/completions`, { messages: [{ role: 'user', content: 'FAIL' }] });
+    await (await post(`${server.url}/v1/responses`, { input: 'hi', stream: true })).text();
+
+    const a = await activity();
+    assert.equal(a.totals.requests, 3);
+    assert.equal(a.totals.errors, 1);
+    assert.equal(a.totals.outputTokens, 18);
+    assert.equal(a.totals.costUsd, 0.0369);
+    assert.deepEqual(a.recent.map((r) => [r.source, r.stream, r.status]), [
+      ['/v1/responses', true, 'ok'],
+      ['/v1/chat/completions', false, 'error'],
+      ['/message', false, 'ok'],
+    ]);
+    assert.match(a.recent[1].error, /something went wrong/);
+    assert.deepEqual(a.recent[2].usage, { input: 3, cacheRead: 5, cacheWrite: 4, output: 6 });
+    assert.equal(a.recent[2].promptChars, 'secret prompt'.length);
+    assert.doesNotMatch(JSON.stringify(a), /secret prompt|echo:/);
+    assert.equal(a.limits.info.unifiedWindows.five_hour.utilization, 0.25);
+    assert.equal(a.hourly.at(-1).requests, 3);
+    assert.equal(a.hourly.at(-1).errors, 1);
+  });
+
+  it('records HTTP errors once, but not favicon or its own requests', async () => {
+    const before = (await activity()).totals;
+    await post(`${server.url}/message`, { message: '' });
+    await fetch(`${server.url}/nope`);
+    await fetch(`${server.url}/favicon.ico`);
+    await post(`${server.url}/message`, { message: 'FAIL' }); // a failed run: logged as a run, not again as HTTP
+
+    const a = await activity();
+    assert.equal(a.totals.requests - before.requests, 3);
+    assert.equal(a.totals.errors - before.errors, 3);
+    assert.equal(a.totals.rejected - before.rejected, 2);
+    assert.deepEqual(a.recent.slice(0, 3).map((r) => [r.source, r.status, r.httpStatus]), [
+      ['/message', 'error', 502],
+      ['/nope', 'rejected', 404],
+      ['/message', 'rejected', 400],
+    ]);
+    assert.equal(a.recent[2].method, 'POST');
+    assert.match(a.recent[2].error, /Missing "message"/);
   });
 });

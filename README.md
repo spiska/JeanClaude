@@ -12,7 +12,8 @@ A tiny HTTP API in front of the [Claude](https://claude.com/claude-code) CLI. It
 
 - an **OpenAI-compatible** `POST /v1/chat/completions` and `POST /v1/responses` (both with streaming), so apps that accept a custom OpenAI base URL can use Claude as their provider;
 - a simple `POST /message` that returns the CLI's raw JSON result, optionally streamed;
-- a small **chat page** in the browser at `/`, built on `/message`.
+- a small **chat page** in the browser at `/`, built on `/message`;
+- an **activity dashboard** at `/dashboard` showing what the running instance is doing.
 
 Under the hood each request runs `claude -p` and feeds it the prompt on stdin. By default it runs in **clean mode**: a chat assistant working in the [`workspace/`](workspace) folder, where it follows `CLAUDE.md`, can read the files you put there and can search the web — but cannot change anything or run commands, and ignores your own Claude Code settings (see [Modes](#modes)).
 
@@ -33,7 +34,7 @@ npm install
 npm start
 ```
 
-The server listens on `http://127.0.0.1:3000`. `npm run dev` restarts it when a `.js` file changes. The chat page (`public/index.html`) is read once at startup, so restart the server after editing it.
+The server listens on `http://127.0.0.1:3000`. `npm run dev` restarts it when a `.js` file changes. The pages in `public/` are read once at startup, so restart the server after editing them.
 
 ### Tests
 
@@ -52,6 +53,18 @@ Open `http://localhost:3000/`. The page streams replies, renders Markdown, lets 
 - The header shows how much of the subscription's 5-hour and weekly limits is used, as reported by `claude` with the last reply (hover for the reset time). It updates after each message.
 - If the server uses `JEANCLAUDE_API_KEY`, enter the key in Settings (the gear icon). The page itself loads without it.
 - The system prompt in Settings applies to chats started after you save; a running chat keeps the one it started with.
+
+## Activity dashboard
+
+Open `http://localhost:3000/dashboard` to see what the running instance is doing. It refreshes every 3 seconds and shows:
+
+- the requests running right now, with their endpoint, model and elapsed time;
+- totals since the server started: requests, failures, cancellations, tokens in and out, and the API-equivalent cost;
+- requests per hour over the last 24 hours, with failures marked;
+- the subscription's 5-hour and weekly limits, as `claude` last reported them (it reports them with streamed replies only);
+- the last 200 requests, with duration, tokens, cost, status and error message. Requests the server turned down before running `claude` are listed too, with their HTTP status: a wrong API key (401), an invalid or too large body (400, 413), an unknown path (404). The browser's `/favicon.ico` and the dashboard's own `/activity` requests are left out.
+
+The activity is kept in memory only, so it starts from zero when the server restarts, and each replica of a deployment has its own. It never contains prompts or answers, only their sizes, timings, token counts and errors. The page uses the API key saved in the chat page's settings; if there is none and the server needs one, it asks for it. Its data comes from `GET /activity`, which needs the API key like the API does.
 
 ## Run in a container
 
@@ -211,6 +224,8 @@ With `"stream": true` the reply is a series of `data:` events, each a JSON objec
 ## Other endpoints
 
 - `GET /` — the chat page. Never requires an API key.
+- `GET /dashboard` — the activity dashboard. Never requires an API key; its data does.
+- `GET /activity` — the dashboard's data as JSON: running requests, totals, hourly counts, the last usage limits and the last 200 requests. Requires the API key when one is set.
 - `GET /health` — returns `{"ok": true}`. Never requires an API key.
 
 ## Errors
