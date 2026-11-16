@@ -36,6 +36,31 @@ jobs:
             type=ref,event=tag
             type=sha
 
+      # Start the image before pushing it, so a broken build never becomes "latest"
+      # (e.g. a source file missing from the Dockerfile's COPY).
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: jeanclaude:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 3000:3000 jeanclaude:smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/health && curl -fsS -o /dev/null http://localhost:3000/dashboard; then
+              docker rm -f smoke; exit 0
+            fi
+            sleep 1
+          done
+          docker logs smoke
+          exit 1
+
       - uses: docker/build-push-action@v6
         with:
           context: .

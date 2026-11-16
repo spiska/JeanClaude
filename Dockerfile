@@ -9,7 +9,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.js claude.js openai.js ./
+COPY *.js ./
 COPY public ./public
 
 # The folder claude runs in (see "Modes" in the README). Mount your own over it to
