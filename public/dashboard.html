@@ -154,7 +154,7 @@
     </section>
     <section>
       <h2>Usage limits <span class="muted" id="limits-at"></span></h2>
-      <div id="limits"><div class="empty">Not reported yet. claude reports them with streamed replies.</div></div>
+      <div id="limits"><div class="empty">Not reported yet. claude reports them with every reply.</div></div>
     </section>
   </div>
 
@@ -365,7 +365,7 @@ function renderLimits(limits) {
     return el('div', { class: 'limit' + (high ? ' high' : '') },
       el('div', { class: 'top' }, el('span', {}, LIMIT_NAMES[key] ?? key.replace(/_/g, ' ')), el('strong', { class: 'num' }, expired ? '–' : pct + '%')),
       el('div', { class: 'bar', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': expired ? 0 : pct, 'aria-label': LIMIT_NAMES[key] ?? key }, fill),
-      el('div', { class: 'when' }, expired ? 'Reset since — the next streamed reply brings a fresh number' : typeof w.resetsAt === 'number' ? `Resets ${when(w.resetsAt * 1000)}` : ''),
+      el('div', { class: 'when' }, expired ? `Reset at ${when(w.resetsAt * 1000)} · the next request brings the new number` : typeof w.resetsAt === 'number' ? `Resets ${when(w.resetsAt * 1000)}` : ''),
     );
   }));
 }

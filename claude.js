@@ -73,7 +73,6 @@ function resolveClaudeBin() {
  *
  * @param {object} o
  * @param {string} o.prompt
- * @param {boolean} [o.stream]        stream-json output with partial messages
  * @param {string} [o.systemPrompt]   replaces the default one (appended in project mode)
  * @param {string} [o.model]          passed to --model
  * @param {string} [o.sessionId]      passed to --resume
@@ -81,9 +80,8 @@ function resolveClaudeBin() {
  * @param {AbortSignal} [o.signal]    kills the process when aborted
  * @param {string} [o.source]         the endpoint asking, for the activity log
  */
-function spawnClaude({ prompt, stream = false, systemPrompt, model, sessionId, persist = true, signal }) {
-  const args = ['-p', '--output-format', stream ? 'stream-json' : 'json'];
-  if (stream) args.push('--verbose', '--include-partial-messages');
+function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, signal }) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (MODE === 'clean') {
     args.push(
       '--system-prompt', systemPrompt ?? SYSTEM_PROMPT, // replaces Claude Code's own prompt
@@ -139,43 +137,17 @@ function failureReason(result) {
   return '';
 }
 
-/** Runs claude to completion and returns its parsed JSON result object. */
+/**
+ * Runs claude to completion and returns its result object. It reads the same
+ * stream-json output as streamClaude, which (unlike plain json) carries the
+ * subscription's usage limits and the reason a run failed.
+ */
 export async function runClaude(options) {
-  const run = activity.begin({ ...options, stream: false });
-  try {
-    const result = await runClaudeOnce(options);
-    run.finish(result);
-    return result;
-  } catch (err) {
-    run.fail(err);
-    throw err;
+  let result;
+  for await (const event of streamClaude({ ...options, stream: false })) {
+    if (event.type === 'result') result = event.result;
   }
-}
-
-async function runClaudeOnce(options) {
-  const { child, exited, stderr } = spawnClaude({ ...options, stream: false });
-  let stdout = '';
-  child.stdout.setEncoding('utf8').on('data', (d) => (stdout += d));
-
-  const end = await exited;
-  const failure = exitError(end);
-  if (failure) throw failure;
-
-  let parsed;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    throw new HttpError(502, 'claude did not return valid JSON', {
-      exitCode: end.code,
-      stdout: stdout.slice(0, 2000),
-      stderr: stderr(),
-    });
-  }
-  if (end.code !== 0 || parsed.is_error) {
-    const reason = failureReason(parsed);
-    throw new HttpError(502, `claude exited with code ${end.code}${reason ? `: ${reason}` : ''}`, { claude: parsed, stderr: stderr() });
-  }
-  return parsed;
+  return result;
 }
 
 /**
@@ -186,7 +158,7 @@ async function runClaudeOnce(options) {
  * Throws HttpError if claude fails.
  */
 export async function* streamClaude(options) {
-  const run = activity.begin({ ...options, stream: true });
+  const run = activity.begin({ stream: true, ...options }); // runClaude passes stream: false
   try {
     for await (const event of streamClaudeOnce(options)) {
       if (event.type === 'limits') activity.setLimits(event.limits);
@@ -202,7 +174,7 @@ export async function* streamClaude(options) {
 }
 
 async function* streamClaudeOnce(options) {
-  const { child, exited, stderr } = spawnClaude({ ...options, stream: true });
+  const { child, exited, stderr } = spawnClaude(options);
   let result;
   let sentText = false;
   try {

@@ -99,7 +99,7 @@ describe('server', () => {
       const res = await post(`${server.url}/message`, { message: 'hi', sessionId: 'abc', model: 'haiku', system: 'Be brief.' });
       const args = (await res.json()).fake_args;
       const flag = (name) => args[args.indexOf(name) + 1];
-      assert.equal(flag('--output-format'), 'json');
+      assert.equal(flag('--output-format'), 'stream-json'); // also for non-streamed replies: it carries the usage limits
       assert.equal(flag('--resume'), 'abc');
       assert.equal(flag('--model'), 'haiku');
       assert.equal(flag('--system-prompt'), 'Be brief.');

@@ -61,7 +61,7 @@ Open `http://localhost:3000/dashboard` to see what the running instance is doing
 - the requests running right now, with their endpoint, model and elapsed time;
 - totals since the server started: requests, failures, cancellations, tokens in and out, and the API-equivalent cost;
 - requests per hour over the last 24 hours, with failures marked;
-- the subscription's 5-hour and weekly limits, as `claude` last reported them (it reports them with streamed replies only);
+- the subscription's 5-hour and weekly limits, as `claude` reported them with the last request. They count all use of the subscription, also outside JeanClaude, so after a window resets the page waits for the next request to show the new number;
 - the last 200 requests, with duration, tokens, cost, status and error message. Requests the server turned down before running `claude` are listed too, with their HTTP status: a wrong API key (401), an invalid or too large body (400, 413), an unknown path (404). The browser's `/favicon.ico` and the dashboard's own `/activity` requests are left out.
 
 The activity is kept in memory only, so it starts from zero when the server restarts, and each replica of a deployment has its own. It never contains prompts or answers, only their sizes, timings, token counts and errors. The page uses the API key saved in the chat page's settings; if there is none and the server needs one, it asks for it. Its data comes from `GET /activity`, which needs the API key like the API does.
