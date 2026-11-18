@@ -36,34 +36,56 @@ const TOOL_NOTE =
   'calls and their results are written out in the conversation as text. To call a tool, always use it ' +
   'directly — never write a tool call out as text.';
 
+// OpenAI's hosted web search tool, in its current and dated names.
+const WEB_SEARCH = /^web_search(_preview)?(_\d{4}_\d{2}_\d{2})?$/;
+const SEARCH_NOTE = 'You can search the web with WebSearch: do so when the question needs current or outside information.';
+const SEARCH_NOW = 'Search the web with WebSearch before you answer.';
+
 /**
- * The client's function tools, from either API's `tools` and `tool_choice`
- * (Chat Completions nests each definition in `function`, the Responses API does
- * not). Returns MCP tool definitions for claude and a note for its system prompt,
- * or nothing when there are no tools or tool_choice is "none".
+ * The client's tools, from either API's `tools` and `tool_choice` (Chat
+ * Completions nests each function in `function`, the Responses API does not).
+ * Function tools become MCP tool definitions for claude. OpenAI's web search tool
+ * (or Chat Completions' `web_search_options`) is served by claude's own
+ * WebSearch. Returns those plus a note for claude's system prompt, or nothing when
+ * there are no tools or tool_choice is "none".
  */
-export function clientTools({ tools, tool_choice }) {
-  if (tools == null) return {};
-  if (!Array.isArray(tools)) throw new HttpError(400, '"tools" must be an array');
-  const list = tools.map((t, i) => {
-    if (t?.type !== 'function') throw new HttpError(400, `tools[${i}]: only function tools are supported (got "${t?.type}")`);
+export function clientTools({ tools, tool_choice, web_search_options }) {
+  if (tools != null && !Array.isArray(tools)) throw new HttpError(400, '"tools" must be an array');
+  let webSearch = web_search_options != null && typeof web_search_options === 'object';
+  const list = [];
+  (tools ?? []).forEach((t, i) => {
+    if (WEB_SEARCH.test(t?.type)) {
+      webSearch = true;
+      return;
+    }
+    if (t?.type !== 'function') {
+      throw new HttpError(400, `tools[${i}]: only function and web search tools are supported (got "${t?.type}")`);
+    }
     const f = t.function ?? t;
     if (typeof f.name !== 'string' || !TOOL_NAME.test(f.name)) {
       throw new HttpError(400, `tools[${i}]: the name must be 1-64 letters, digits, "_" or "-"`);
     }
     const schema = f.parameters && typeof f.parameters === 'object' ? f.parameters : {};
-    return { name: f.name, description: typeof f.description === 'string' ? f.description : '', inputSchema: { type: 'object', ...schema } };
+    list.push({ name: f.name, description: typeof f.description === 'string' ? f.description : '', inputSchema: { type: 'object', ...schema } });
   });
-  if (!list.length || tool_choice === 'none') return {};
+  if (tool_choice === 'none' || (!list.length && !webSearch)) return {};
 
-  const forced = tool_choice && typeof tool_choice === 'object' ? (tool_choice.function?.name ?? tool_choice.name) : undefined;
+  const choice = tool_choice && typeof tool_choice === 'object' ? tool_choice : undefined;
+  const forceSearch = WEB_SEARCH.test(choice?.type) || (tool_choice === 'required' && !list.length);
+  if (forceSearch) webSearch = true;
+  const forced = choice && !forceSearch ? (choice.function?.name ?? choice.name) : undefined;
   if (forced !== undefined && !list.some((t) => t.name === forced)) {
     throw new HttpError(400, `"tool_choice" names a tool that is not in "tools": ${forced}`);
   }
-  let instruction = TOOL_NOTE;
-  if (forced) instruction += ` Now call the tool ${CLIENT_TOOL_PREFIX}${forced}.`;
-  else if (tool_choice === 'required') instruction += ' Now call at least one of these tools.';
-  return { tools: list, toolInstruction: instruction };
+
+  const notes = [];
+  if (list.length) {
+    notes.push(TOOL_NOTE);
+    if (forced) notes.push(`Now call the tool ${CLIENT_TOOL_PREFIX}${forced}.`);
+    else if (tool_choice === 'required') notes.push('Now call at least one of these tools.');
+  }
+  if (webSearch) notes.push(forceSearch ? SEARCH_NOW : SEARCH_NOTE);
+  return { ...(list.length ? { tools: list } : {}), webSearch, toolInstruction: notes.join(' ') };
 }
 
 /** An earlier tool call written out for the transcript. */
@@ -246,11 +268,23 @@ export function functionCallItem(call, status = 'completed') {
   };
 }
 
-/** A finished response's output: the message (left out when there are only tool calls), then the calls. */
+/** A web search claude ran, as a Responses API output item. */
+export function webSearchItem(search, status = 'completed') {
+  return { type: 'web_search_call', id: `ws_${search.id}`, status, action: { type: 'search', query: search.query } };
+}
+
+/**
+ * A finished response's output: the web searches, the message (left out when
+ * there are only tool calls), then the tool calls.
+ */
 function responseOutput(messageId, result) {
   const text = String(result.result ?? '');
   const calls = result.tool_calls ?? [];
-  return [...(text || !calls.length ? [responseMessage({ messageId, text })] : []), ...calls.map((c) => functionCallItem(c))];
+  return [
+    ...(result.web_searches ?? []).map((search) => webSearchItem(search)),
+    ...(text || !calls.length ? [responseMessage({ messageId, text })] : []),
+    ...calls.map((call) => functionCallItem(call)),
+  ];
 }
 
 /**

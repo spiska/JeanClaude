@@ -172,7 +172,7 @@ describe('tools', () => {
     const rejects = (body, pattern) =>
       assert.throws(() => clientTools(body), (err) => err instanceof HttpError && err.status === 400 && pattern.test(err.message));
     rejects({ tools: {} }, /must be an array/);
-    rejects({ tools: [{ type: 'web_search_preview' }] }, /only function tools/);
+    rejects({ tools: [{ type: 'file_search' }] }, /only function and web search tools/);
     rejects({ tools: [{ type: 'function', function: { name: 'bad name' } }] }, /name/);
     rejects({ tools: [{ type: 'function', function: weather }], tool_choice: { type: 'function', function: { name: 'other' } } }, /not in "tools"/);
   });
@@ -210,5 +210,36 @@ describe('tools', () => {
     ]);
     const withText = response({ id: 'resp_1', messageId: 'msg_1', created: 1, model: 'm', result: { ...result, result: 'Let me check.' } });
     assert.deepEqual(withText.output.map((o) => o.type), ['message', 'function_call']);
+  });
+});
+
+describe('web search', () => {
+  it('turns OpenAI\'s web search tool into a note for claude', () => {
+    for (const type of ['web_search', 'web_search_preview', 'web_search_preview_2025_03_11']) {
+      const options = clientTools({ tools: [{ type }] });
+      assert.equal(options.webSearch, true);
+      assert.equal(options.tools, undefined);
+      assert.match(options.toolInstruction, /^You can search the web with WebSearch/);
+    }
+    assert.equal(clientTools({ web_search_options: {} }).webSearch, true);
+    assert.deepEqual(clientTools({ tools: [{ type: 'web_search' }], tool_choice: 'none' }), {});
+  });
+
+  it('asks claude to search when tool_choice requires it', () => {
+    assert.match(clientTools({ tools: [{ type: 'web_search' }], tool_choice: { type: 'web_search_preview' } }).toolInstruction, /before you answer/);
+    assert.match(clientTools({ tools: [{ type: 'web_search' }], tool_choice: 'required' }).toolInstruction, /before you answer/);
+  });
+
+  it('goes along with function tools', () => {
+    const options = clientTools({ tools: [{ type: 'function', name: 'f' }, { type: 'web_search' }] });
+    assert.deepEqual(options.tools.map((t) => t.name), ['f']);
+    assert.match(options.toolInstruction, /mcp__client__.*WebSearch/s);
+  });
+
+  it('lists searches before the message in a response', () => {
+    const result = { result: 'Found it.', web_searches: [{ id: 'toolu_s1', query: 'q' }] };
+    const body = response({ id: 'resp_1', messageId: 'msg_1', created: 1, model: 'm', result });
+    assert.deepEqual(body.output[0], { type: 'web_search_call', id: 'ws_toolu_s1', status: 'completed', action: { type: 'search', query: 'q' } });
+    assert.equal(body.output[1].type, 'message');
   });
 });

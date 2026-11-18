@@ -84,13 +84,14 @@ function resolveClaudeBin() {
  * @param {AbortSignal} [o.signal]    kills the process when aborted
  * @param {string} [o.source]         the endpoint asking, for the activity log
  * @param {object[]} [o.tools]        the client's tools: { name, description, inputSchema }
- * @param {string} [o.toolInstruction] added to the system prompt when there are tools
+ * @param {boolean} [o.webSearch]     the client asked for web search (pre-approves it in project mode)
+ * @param {string} [o.toolInstruction] added to the system prompt, about the tools above
  */
-function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, signal, tools, toolInstruction }) {
+function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, signal, tools, webSearch, toolInstruction }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   const clientTools = tools?.length ? tools : undefined;
   const allowed = clientTools ? clientTools.map((t) => CLIENT_TOOL_PREFIX + t.name) : [];
-  const extra = clientTools && toolInstruction ? toolInstruction : undefined;
+  const extra = toolInstruction || undefined;
   if (MODE === 'clean') {
     const system = [systemPrompt ?? SYSTEM_PROMPT, extra].filter(Boolean).join('\n\n');
     args.push(
@@ -103,6 +104,7 @@ function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, s
   } else {
     const system = [systemPrompt, extra].filter(Boolean).join('\n\n');
     if (system) args.push('--append-system-prompt', system);
+    if (webSearch) allowed.push('WebSearch', 'WebFetch');
     if (allowed.length) args.push('--allowedTools', allowed.join(','));
   }
   // The client's tools: a list file and an MCP config pointing at it, removed on exit.
@@ -177,6 +179,7 @@ export async function runClaude(options) {
  * Runs claude and yields its output as it is generated:
  *   { type: 'delta', text }     a piece of the answer
  *   { type: 'limits', limits }  subscription usage limits (rate_limit_info), when claude reports them
+ *   { type: 'web_search', search }  claude searched the web: { id, query }
  *   { type: 'result', result }  the final result object (always last)
  * Throws HttpError if claude fails.
  */
@@ -210,6 +213,7 @@ async function* streamClaudeOnce(options) {
   // Client tool calls of the current model turn, and what is needed to answer
   // without claude's own result event when the turn ends with them.
   let toolCalls = [];
+  const searches = []; // claude's own web searches, reported to Responses API clients
   let stopping = false;
   let text = '';
   let sessionId;
@@ -254,6 +258,11 @@ async function* streamClaudeOnce(options) {
       } else if (event.type === 'assistant') {
         // Each assistant event carries finished content blocks, tool calls with their whole input.
         for (const block of event.message?.content ?? []) {
+          if (block?.type === 'tool_use' && block.name === 'WebSearch') {
+            const search = { id: block.id, query: String(block.input?.query ?? '') };
+            searches.push(search);
+            yield { type: 'web_search', search };
+          }
           if (block?.type === 'tool_use' && block.name?.startsWith(CLIENT_TOOL_PREFIX)) {
             toolCalls.push({ id: block.id, name: block.name.slice(CLIENT_TOOL_PREFIX.length), arguments: JSON.stringify(block.input ?? {}) });
           }
@@ -280,6 +289,7 @@ async function* streamClaudeOnce(options) {
           is_error: false,
           result: text,
           tool_calls: calls,
+          web_searches: searches,
           session_id: sessionId,
           num_turns: turns,
           total_cost_usd: 0, // claude only reports it in its own result event
@@ -302,7 +312,7 @@ async function* streamClaudeOnce(options) {
         stderr: stderr(),
       });
     }
-    yield { type: 'result', result };
+    yield { type: 'result', result: searches.length ? { ...result, web_searches: searches } : result };
   } finally {
     // The consumer stopped early (client went away) — don't leave claude running.
     if (child.exitCode === null && child.signalCode === null) child.kill();

@@ -429,7 +429,9 @@ describe('tool calling', () => {
     const body = await res.json();
     assert.equal(body.status, 'completed');
     assert.deepEqual(body.tools, responsesTools);
+    // The fake also runs its own WebSearch, which shows up as a web_search_call.
     assert.deepEqual(body.output.map((o) => [o.type, o.call_id ?? null, o.name ?? null]), [
+      ['web_search_call', null, null],
       ['message', null, null],
       ['function_call', 'toolu_1', 'get_weather'],
       ['function_call', 'toolu_2', 'get_weather'],
@@ -446,34 +448,65 @@ describe('tool calling', () => {
       ['response.function_call_arguments.done', index],
       ['response.output_item.done', index],
     ];
+    // Items are numbered as they appear: the text, the search the fake runs after it, the calls.
     assert.deepEqual(list.map((e) => [e.event, e.data.output_index ?? null]), [
       ['response.created', null],
       ['response.in_progress', null],
       ['response.output_item.added', 0],
       ['response.content_part.added', 0],
       ['response.output_text.delta', 0],
+      ['response.output_item.added', 1],
+      ['response.web_search_call.in_progress', 1],
+      ['response.web_search_call.searching', 1],
+      ['response.web_search_call.completed', 1],
+      ['response.output_item.done', 1],
       ['response.output_text.done', 0],
       ['response.content_part.done', 0],
       ['response.output_item.done', 0],
-      ...call(1),
       ...call(2),
+      ...call(3),
       ['response.completed', null],
     ]);
-    const added = list[8].data.item;
+    const added = list[13].data.item;
     assert.equal(added.arguments, '');
     assert.equal(added.status, 'in_progress');
-    const done = list[11].data.item;
+    const done = list[16].data.item;
     assert.equal(done.call_id, 'toolu_1');
     assert.deepEqual(argsOf(done).tools, ['get_weather']);
-    assert.deepEqual(list.at(-1).data.response.output.map((o) => o.type), ['message', 'function_call', 'function_call']);
+    assert.deepEqual(list.at(-1).data.response.output.map((o) => o.type), ['message', 'web_search_call', 'function_call', 'function_call']);
   });
 
   it('records tool calls in the activity log', async () => {
     const { recent, limits } = await (await fetch(`${server.url}/activity`)).json();
-    const entry = recent.find((r) => r.source === '/v1/responses');
+    const entry = recent.find((r) => r.source === '/v1/responses' && r.toolCalls);
     assert.equal(entry.status, 'ok');
     assert.equal(entry.toolCalls, 2);
     assert.deepEqual(entry.models, ['claude-fake-1']);
     assert.equal(limits.info.unifiedWindows.five_hour.utilization, 0.5);
+  });
+
+  it('answers with web search, reporting the searches in the Responses API', async () => {
+    const res = await post(`${server.url}/v1/responses`, { tools: [{ type: 'web_search_preview' }], input: 'SEARCH' });
+    assert.equal(res.status, 200);
+    const { output } = await res.json();
+    assert.deepEqual(output[0], { type: 'web_search_call', id: 'ws_toolu_s1', status: 'completed', action: { type: 'search', query: 'fake query' } });
+    assert.equal(output[1].content[0].text, 'echo: SEARCH');
+
+    const stream = await namedEvents(await post(`${server.url}/v1/responses`, { stream: true, tools: [{ type: 'web_search' }], input: 'SEARCH' }));
+    assert.deepEqual(stream.slice(2, 7).map((e) => [e.event, e.data.output_index]), [
+      ['response.output_item.added', 0],
+      ['response.web_search_call.in_progress', 0],
+      ['response.web_search_call.searching', 0],
+      ['response.web_search_call.completed', 0],
+      ['response.output_item.done', 0],
+    ]);
+    assert.equal(stream[7].event, 'response.output_item.added');
+    assert.equal(stream[7].data.output_index, 1);
+  });
+
+  it('takes web_search_options in chat completions', async () => {
+    const res = await post(`${server.url}/v1/chat/completions`, { web_search_options: {}, messages: [{ role: 'user', content: 'SEARCH' }] });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, 'echo: SEARCH');
   });
 });

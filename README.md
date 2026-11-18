@@ -160,6 +160,7 @@ If the server uses `JEANCLAUDE_API_KEY`, add `-H "authorization: Bearer $JEANCLA
 | `model`                              | Claude aliases and ids are passed on; any other name (e.g. `gpt-4o`) uses Claude's default model. |
 | `GET /v1/models`                     | Supported.                                                     |
 | Tool / function calling              | Supported for `function` tools, with `tool_choice` and `parallel_tool_calls` — see [Tool calling](#tool-calling). |
+| Web search                           | `web_search_options` (and the Responses API's `web_search` tool) use Claude's own web search — see [Web search](#web-search). |
 | Images and other non-text content    | Not supported — rejected with 400.                             |
 | `temperature`, `max_tokens`, `n`, …  | Ignored — the CLI has no equivalent.                           |
 
@@ -179,7 +180,8 @@ curl -s localhost:3000/v1/responses \
 - `"stream": true` sends the standard events, from `response.created` through `response.output_text.delta` to `response.completed` (or `response.failed`).
 - It is stateless too: `previous_response_id` is rejected with 400, so the client has to send the whole conversation in `input` (most do when `store` is off).
 - Function tools work as in Chat Completions: calls come back as `function_call` output items (streamed with `response.function_call_arguments.*` events), results go in as `function_call_output` items.
-- The same limits as above apply otherwise: text only, sampling parameters are ignored, and built-in tools such as `web_search_preview` are rejected with 400.
+- The `web_search` / `web_search_preview` tool is served by Claude's own web search; each search comes back as a `web_search_call` item (see [Web search](#web-search)).
+- The same limits as above apply otherwise: text only, sampling parameters are ignored, and other built-in tools (`file_search`, `code_interpreter`, `computer_use_preview`, …) are rejected with 400.
 
 ### Tool calling
 
@@ -195,6 +197,16 @@ Details:
 - `tool_choice`: `"auto"` (default), `"none"` (Claude gets no tools), `"required"` and a specific function are passed on as an instruction to Claude, not enforced. `parallel_tool_calls: false` returns only the first call.
 - In clean mode Claude keeps its own tools (web search, reading the workspace) alongside yours and may use them before it answers; it calls them itself and they never reach the client.
 - A step that ends in tool calls reports its token usage but no cost (`claude` reports the cost only for a finished run).
+
+### Web search
+
+OpenAI's hosted web search maps onto Claude's own `WebSearch`: the `web_search` or `web_search_preview` tool in the Responses API, `web_search_options` in Chat Completions.
+
+- Claude runs the searches itself, on the server; nothing goes back to the client to run. The answer usually names its sources as Markdown links.
+- The Responses API lists each search as a `web_search_call` output item with its query (`action.query`), streamed with the `response.web_search_call.*` events as it happens. Chat Completions has no place for them, so only the answer shows.
+- In clean mode Claude can search the web anyway; the tool tells it that it may and should when the question needs it. `tool_choice: {"type": "web_search_preview"}` (or `"required"` with no function tools) asks it to search before answering. In project mode the tool also pre-approves `WebSearch` and `WebFetch`.
+- Sources are not returned as `url_citation` annotations.
+- Can be combined with function tools.
 
 ## `POST /message`
 

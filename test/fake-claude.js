@@ -4,6 +4,7 @@
 // the real CLI uses. The prompt can ask for special behaviour:
 //   FAIL    the run fails (is_error, exit code 1)
 //   TOOL    the answer comes in two model turns, as around a tool call
+//   SEARCH  searches the web with claude's own WebSearch before answering
 //   CALL    calls the first of the client's tools (from --mcp-config), then waits
 //           for its result forever, like the real CLI; the server has to stop it.
 //           The call's arguments are { args, tools } so tests can check them.
@@ -60,6 +61,9 @@ process.stdin.on('end', () => {
     const text = (t) => print({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } });
     print({ type: 'system', subtype: 'init' });
     messageStart();
+    if (prompt.includes('SEARCH')) {
+      print({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_s1', name: 'WebSearch', input: { query: 'fake query' } }] } });
+    }
     if (prompt.includes('TOOL')) {
       text('Let me look.');
       messageStart(); // the next turn, after the "tool call"

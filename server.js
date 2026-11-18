@@ -21,6 +21,7 @@ import {
   responseMessage,
   responsesToMessages,
   toPrompt,
+  webSearchItem,
 } from './openai.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -174,7 +175,7 @@ app.post('/message', async (c) => {
     event: (e, send) => {
       if (e.type === 'delta') return send({ type: 'delta', text: e.text });
       if (e.type === 'limits') return send({ type: 'limits', limits: e.limits });
-      return send({ type: 'result', result: e.result });
+      if (e.type === 'result') return send({ type: 'result', result: e.result });
     },
     error: (err, send) => send({ type: 'error', error: err.message }),
   });
@@ -245,19 +246,22 @@ app.post('/v1/responses', async (c) => {
     return c.json(response({ ...base, result }));
   }
 
-  // Each event repeats its type in the data and carries a sequence number. The
-  // message item is opened with the first text, so a reply that only calls tools
-  // has no empty message in front of them.
+  // Each event repeats its type in the data and carries a sequence number. Output
+  // items get their index in the order they appear: web searches as claude runs
+  // them, the message with its first text (so a reply that only calls tools has
+  // no empty message in front of them), then the tool calls.
   let sequence = 0;
   const emit = (send, type, fields) => send({ type, sequence_number: sequence++, ...fields }, type);
-  const at = { item_id: base.messageId, output_index: 0, content_index: 0 };
-  let opened = false;
+  const output = []; // the finished items, in index order
+  let messageIndex; // set once the message item is opened
   let text = '';
+  const at = () => ({ item_id: base.messageId, output_index: messageIndex, content_index: 0 });
   const open = async (send) => {
-    opened = true;
+    messageIndex = output.length;
+    output.push(null); // filled in when the message is done
     const item = responseMessage({ messageId: base.messageId, status: 'in_progress' });
-    await emit(send, 'response.output_item.added', { output_index: 0, item });
-    await emit(send, 'response.content_part.added', { ...at, part: { type: 'output_text', text: '', annotations: [] } });
+    await emit(send, 'response.output_item.added', { output_index: messageIndex, item });
+    await emit(send, 'response.content_part.added', { ...at(), part: { type: 'output_text', text: '', annotations: [] } });
   };
   return streamResponse(c, options, {
     start: async (send) => {
@@ -265,37 +269,50 @@ app.post('/v1/responses', async (c) => {
       await emit(send, 'response.in_progress', { response: response(base) });
     },
     event: async (e, send) => {
-      if (e.type === 'delta') {
-        if (!opened) await open(send);
+      if (e.type === 'web_search') {
+        // claude runs the search itself; by the time the query is known it is under way.
+        const index = output.length;
+        const item = webSearchItem(e.search);
+        output.push(item);
+        const ref = { output_index: index, item_id: item.id };
+        await emit(send, 'response.output_item.added', { output_index: index, item: webSearchItem(e.search, 'in_progress') });
+        await emit(send, 'response.web_search_call.in_progress', ref);
+        await emit(send, 'response.web_search_call.searching', ref);
+        await emit(send, 'response.web_search_call.completed', ref);
+        await emit(send, 'response.output_item.done', { output_index: index, item });
+      } else if (e.type === 'delta') {
+        if (messageIndex === undefined) await open(send);
         text += e.text;
-        await emit(send, 'response.output_text.delta', { ...at, delta: e.text, logprobs: [] });
+        await emit(send, 'response.output_text.delta', { ...at(), delta: e.text, logprobs: [] });
       } else if (e.type === 'result') {
         const final = String(e.result.result ?? '');
         const calls = e.result.tool_calls ?? [];
         if (!text && final) {
           await open(send);
-          await emit(send, 'response.output_text.delta', { ...at, delta: final, logprobs: [] });
+          await emit(send, 'response.output_text.delta', { ...at(), delta: final, logprobs: [] });
         }
-        // The stream's text is what the client has seen; it can differ from the
-        // result in the separators between model turns.
-        const done = text || final;
-        const finished = response({ ...base, result: { ...e.result, result: done } });
-        if (!opened && !calls.length) await open(send); // an empty answer still gets its message
-        if (opened) {
-          await emit(send, 'response.output_text.done', { ...at, text: done, logprobs: [] });
-          await emit(send, 'response.content_part.done', { ...at, part: { type: 'output_text', text: done, annotations: [] } });
-          await emit(send, 'response.output_item.done', { output_index: 0, item: finished.output[0] });
+        if (messageIndex === undefined && !calls.length) await open(send); // an empty answer still gets its message
+        if (messageIndex !== undefined) {
+          // The stream's text is what the client has seen; it can differ from the
+          // result in the separators between model turns.
+          const done = text || final;
+          const item = responseMessage({ messageId: base.messageId, text: done });
+          output[messageIndex] = item;
+          await emit(send, 'response.output_text.done', { ...at(), text: done, logprobs: [] });
+          await emit(send, 'response.content_part.done', { ...at(), part: { type: 'output_text', text: done, annotations: [] } });
+          await emit(send, 'response.output_item.done', { output_index: messageIndex, item });
         }
-        let index = opened ? 1 : 0;
         for (const call of calls) {
+          const index = output.length;
           const item = functionCallItem(call);
+          output.push(item);
           await emit(send, 'response.output_item.added', { output_index: index, item: functionCallItem(call, 'in_progress') });
           await emit(send, 'response.function_call_arguments.delta', { item_id: item.id, output_index: index, delta: call.arguments });
           await emit(send, 'response.function_call_arguments.done', { item_id: item.id, output_index: index, name: call.name, arguments: call.arguments });
           await emit(send, 'response.output_item.done', { output_index: index, item });
-          index++;
         }
-        await emit(send, 'response.completed', { response: finished });
+        const finished = response({ ...base, result: e.result });
+        await emit(send, 'response.completed', { response: { ...finished, output } });
       }
     },
     error: (err, send) => emit(send, 'response.failed', { response: response({ ...base, error: err }) }),
