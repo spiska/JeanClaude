@@ -125,6 +125,7 @@ function resultFields(result) {
   return {
     models: result?.modelUsage && typeof result.modelUsage === 'object' ? Object.keys(result.modelUsage) : [],
     turns: num(result?.num_turns),
+    toolCalls: Array.isArray(result?.tool_calls) ? result.tool_calls.length : 0,
     costUsd: num(result?.total_cost_usd),
     usage: {
       input: num(u.input_tokens),

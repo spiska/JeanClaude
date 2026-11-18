@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,10 @@ const CLEAN_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'];
 const CLEAN_ALLOWED_TOOLS = ['WebSearch', 'WebFetch', 'Skill'];
 // Only the workspace's own skills (.claude/skills/), not the ones built into the CLI.
 const CLEAN_ENV = { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1', CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL: '1' };
+// The API client's own tools reach claude through tools-mcp.js, an MCP server named
+// "client", so claude sees them as mcp__client__<name>.
+export const CLIENT_TOOL_PREFIX = 'mcp__client__';
+const TOOLS_MCP = fileURLToPath(new URL('./tools-mcp.js', import.meta.url));
 // The path must stay stable: sessions can only be resumed from the same cwd.
 export const CLAUDE_CWD =
   process.env.CLAUDE_CWD ?? (MODE === 'clean' ? fileURLToPath(new URL('./workspace', import.meta.url)) : process.cwd());
@@ -79,19 +83,37 @@ function resolveClaudeBin() {
  * @param {boolean} [o.persist]       false = don't save the session to disk
  * @param {AbortSignal} [o.signal]    kills the process when aborted
  * @param {string} [o.source]         the endpoint asking, for the activity log
+ * @param {object[]} [o.tools]        the client's tools: { name, description, inputSchema }
+ * @param {string} [o.toolInstruction] added to the system prompt when there are tools
  */
-function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, signal }) {
+function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, signal, tools, toolInstruction }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+  const clientTools = tools?.length ? tools : undefined;
+  const allowed = clientTools ? clientTools.map((t) => CLIENT_TOOL_PREFIX + t.name) : [];
+  const extra = clientTools && toolInstruction ? toolInstruction : undefined;
   if (MODE === 'clean') {
+    const system = [systemPrompt ?? SYSTEM_PROMPT, extra].filter(Boolean).join('\n\n');
     args.push(
-      '--system-prompt', systemPrompt ?? SYSTEM_PROMPT, // replaces Claude Code's own prompt
+      '--system-prompt', system, // replaces Claude Code's own prompt
       '--tools', CLEAN_TOOLS.join(','), // no shell, no editing
-      '--allowedTools', CLEAN_ALLOWED_TOOLS.join(','),
+      '--allowedTools', [...CLEAN_ALLOWED_TOOLS, ...allowed].join(','),
       '--setting-sources', 'project', // the workspace's CLAUDE.md and .claude/ (skills), not your user settings
-      '--strict-mcp-config', // no MCP servers
+      '--strict-mcp-config', // no MCP servers other than the client's tools
     );
-  } else if (systemPrompt) {
-    args.push('--append-system-prompt', systemPrompt);
+  } else {
+    const system = [systemPrompt, extra].filter(Boolean).join('\n\n');
+    if (system) args.push('--append-system-prompt', system);
+    if (allowed.length) args.push('--allowedTools', allowed.join(','));
+  }
+  // The client's tools: a list file and an MCP config pointing at it, removed on exit.
+  let toolsDir;
+  if (clientTools) {
+    toolsDir = mkdtempSync(join(tmpdir(), 'jeanclaude-tools-'));
+    const listFile = join(toolsDir, 'tools.json');
+    const configFile = join(toolsDir, 'mcp.json');
+    writeFileSync(listFile, JSON.stringify(clientTools));
+    writeFileSync(configFile, JSON.stringify({ mcpServers: { client: { command: process.execPath, args: [TOOLS_MCP, listFile] } } }));
+    args.push('--mcp-config', configFile);
   }
   if (model) args.push('--model', model);
   if (sessionId) args.push('--resume', sessionId);
@@ -115,6 +137,7 @@ function spawnClaude({ prompt, systemPrompt, model, sessionId, persist = true, s
     child.on('error', (error) => resolve({ error }));
     child.on('close', (code, sig) => resolve({ code, sig }));
   });
+  if (toolsDir) exited.then(() => rmSync(toolsDir, { recursive: true, force: true }));
 
   return { child, exited, stderr: () => stderr.slice(0, 2000) };
 }
@@ -173,10 +196,26 @@ export async function* streamClaude(options) {
   }
 }
 
+/** Adds a message's token counts (from message_delta) to a running total. */
+function addUsage(total, u) {
+  for (const key of ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens']) {
+    total[key] = (total[key] ?? 0) + (typeof u?.[key] === 'number' ? u[key] : 0);
+  }
+}
+
 async function* streamClaudeOnce(options) {
   const { child, exited, stderr } = spawnClaude(options);
   let result;
   let sentText = false;
+  // Client tool calls of the current model turn, and what is needed to answer
+  // without claude's own result event when the turn ends with them.
+  let toolCalls = [];
+  let stopping = false;
+  let text = '';
+  let sessionId;
+  const models = new Set();
+  const usage = {};
+  let turns = 0;
   try {
     for await (const line of createInterface({ input: child.stdout })) {
       if (!line.trim()) continue;
@@ -186,18 +225,69 @@ async function* streamClaudeOnce(options) {
       } catch {
         continue;
       }
-      if (event.type === 'stream_event' && event.event?.type === 'message_start' && sentText) {
-        // A new model turn after a tool call: keep its text apart from what came before.
-        sentText = false;
-        yield { type: 'delta', text: '\n\n' };
-      } else if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta') {
+      const se = event.type === 'stream_event' ? event.event : undefined;
+      if (stopping) {
+        // The tool calls are complete. claude reports the usage limits right after;
+        // anything else means it has moved on to running the tools.
+        if (event.type === 'rate_limit_event' && event.rate_limit_info) yield { type: 'limits', limits: event.rate_limit_info };
+        if (event.type !== 'system') break;
+        continue;
+      }
+      if (event.type === 'system' && event.subtype === 'init') {
+        sessionId = event.session_id;
+      } else if (se?.type === 'message_start') {
+        turns++;
+        toolCalls = [];
+        if (se.message?.model) models.add(se.message.model);
+        if (sentText) {
+          // A new model turn after a tool call: keep its text apart from what came before.
+          sentText = false;
+          text += '\n\n';
+          yield { type: 'delta', text: '\n\n' };
+        }
+      } else if (se?.delta?.type === 'text_delta') {
         sentText = true;
-        yield { type: 'delta', text: event.event.delta.text };
+        text += se.delta.text;
+        yield { type: 'delta', text: se.delta.text };
+      } else if (se?.type === 'message_delta') {
+        addUsage(usage, se.usage);
+      } else if (event.type === 'assistant') {
+        // Each assistant event carries finished content blocks, tool calls with their whole input.
+        for (const block of event.message?.content ?? []) {
+          if (block?.type === 'tool_use' && block.name?.startsWith(CLIENT_TOOL_PREFIX)) {
+            toolCalls.push({ id: block.id, name: block.name.slice(CLIENT_TOOL_PREFIX.length), arguments: JSON.stringify(block.input ?? {}) });
+          }
+        }
+      } else if (se?.type === 'message_stop' && toolCalls.length) {
+        // The model wants the client's tools: hand the calls over instead of letting
+        // claude wait for an answer. Give it a moment to report the usage limits.
+        stopping = true;
+        setTimeout(() => child.kill(), 1000).unref();
       } else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
         yield { type: 'limits', limits: event.rate_limit_info };
       } else if (event.type === 'result') {
         result = event;
       }
+    }
+
+    if (stopping) {
+      const calls = options.singleToolCall ? toolCalls.slice(0, 1) : toolCalls;
+      yield {
+        type: 'result',
+        result: {
+          type: 'result',
+          subtype: 'tool_calls',
+          is_error: false,
+          result: text,
+          tool_calls: calls,
+          session_id: sessionId,
+          num_turns: turns,
+          total_cost_usd: 0, // claude only reports it in its own result event
+          usage,
+          modelUsage: Object.fromEntries([...models].map((m) => [m, {}])),
+        },
+      };
+      return;
     }
 
     const end = await exited;

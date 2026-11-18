@@ -351,3 +351,129 @@ describe('activity', () => {
     assert.match(a.recent[2].error, /Missing "message"/);
   });
 });
+
+describe('tool calling', () => {
+  let server;
+  before(async () => (server = await startServer()));
+  after(() => server.stop());
+
+  const weather = { name: 'get_weather', description: 'Weather in a city', parameters: { type: 'object', properties: { city: { type: 'string' } } } };
+  const chatTools = [{ type: 'function', function: weather }, { type: 'function', function: { name: 'get_time' } }];
+  const responsesTools = [{ type: 'function', ...weather }];
+  const argsOf = (call) => JSON.parse(call.function?.arguments ?? call.arguments);
+
+  it('returns the calls claude makes to the client\'s tools as a chat completion', async () => {
+    const started = Date.now();
+    const res = await post(`${server.url}/v1/chat/completions`, { tools: chatTools, messages: [{ role: 'user', content: 'CALL' }] });
+    assert.equal(res.status, 200);
+    const { choices, usage } = await res.json();
+    assert.ok(Date.now() - started < 5000, 'claude was stopped instead of waiting for the tool result');
+    assert.equal(choices[0].finish_reason, 'tool_calls');
+    const { message } = choices[0];
+    assert.equal(message.content, 'Let me check.');
+    // Only the client's tools, not claude's own (WebSearch).
+    assert.deepEqual(message.tool_calls.map((c) => [c.id, c.type, c.function.name]), [
+      ['toolu_1', 'function', 'get_weather'],
+      ['toolu_2', 'function', 'get_weather'],
+    ]);
+    const { args, tools } = argsOf(message.tool_calls[0]);
+    assert.deepEqual(tools, ['get_weather', 'get_time']);
+    const flag = (name) => args[args.indexOf(name) + 1];
+    assert.match(flag('--allowedTools'), /mcp__client__get_weather,mcp__client__get_time/);
+    assert.match(flag('--system-prompt'), /^You are a helpful assistant\.\n\nTools whose names start with mcp__client__/);
+    assert.deepEqual(usage, { prompt_tokens: 7, completion_tokens: 8, total_tokens: 15 });
+  });
+
+  it('keeps one call when parallel_tool_calls is false', async () => {
+    const body = { tools: chatTools, parallel_tool_calls: false, messages: [{ role: 'user', content: 'CALL' }] };
+    const { choices } = await (await post(`${server.url}/v1/chat/completions`, body)).json();
+    assert.equal(choices[0].message.tool_calls.length, 1);
+  });
+
+  it('streams tool calls as chunks', async () => {
+    const res = await post(`${server.url}/v1/chat/completions`, { stream: true, tools: chatTools, messages: [{ role: 'user', content: 'CALL' }] });
+    const data = await events(res);
+    assert.equal(data.at(-1), '[DONE]');
+    const deltas = data.slice(0, -1).map((d) => d.choices[0]);
+    const calls = deltas.flatMap((d) => d.delta.tool_calls ?? []);
+    assert.deepEqual(calls.map((c) => [c.index, c.id, c.function.name]), [
+      [0, 'toolu_1', 'get_weather'],
+      [1, 'toolu_2', 'get_weather'],
+    ]);
+    assert.equal(deltas.at(-1).finish_reason, 'tool_calls');
+  });
+
+  it('runs without tools when tool_choice is "none"', async () => {
+    const body = { tools: chatTools, tool_choice: 'none', messages: [{ role: 'user', content: 'CALL' }] };
+    const { choices } = await (await post(`${server.url}/v1/chat/completions`, body)).json();
+    assert.equal(choices[0].finish_reason, 'stop');
+    assert.equal(choices[0].message.content, 'echo: CALL');
+  });
+
+  it('sends earlier calls and results back to claude as text', async () => {
+    const res = await post(`${server.url}/v1/chat/completions`, {
+      tools: chatTools,
+      messages: [
+        { role: 'user', content: 'Weather?' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'c1', content: 'sunny' },
+      ],
+    });
+    const { content } = (await res.json()).choices[0].message;
+    assert.match(content, /\[Called tool mcp__client__get_weather \(call id c1\) with arguments \{\}\]/);
+    assert.match(content, /### Tool result \(call id c1\)\nsunny/);
+  });
+
+  it('returns function_call items from the Responses API', async () => {
+    const res = await post(`${server.url}/v1/responses`, { tools: responsesTools, input: 'CALL' });
+    const body = await res.json();
+    assert.equal(body.status, 'completed');
+    assert.deepEqual(body.tools, responsesTools);
+    assert.deepEqual(body.output.map((o) => [o.type, o.call_id ?? null, o.name ?? null]), [
+      ['message', null, null],
+      ['function_call', 'toolu_1', 'get_weather'],
+      ['function_call', 'toolu_2', 'get_weather'],
+    ]);
+  });
+
+  it('streams Responses API function calls', async () => {
+    const res = await post(`${server.url}/v1/responses`, { stream: true, tools: responsesTools, input: 'CALL' });
+    const list = await namedEvents(res);
+    assert.deepEqual(list.map((e) => e.data.sequence_number), list.map((_, i) => i));
+    const call = (index) => [
+      ['response.output_item.added', index],
+      ['response.function_call_arguments.delta', index],
+      ['response.function_call_arguments.done', index],
+      ['response.output_item.done', index],
+    ];
+    assert.deepEqual(list.map((e) => [e.event, e.data.output_index ?? null]), [
+      ['response.created', null],
+      ['response.in_progress', null],
+      ['response.output_item.added', 0],
+      ['response.content_part.added', 0],
+      ['response.output_text.delta', 0],
+      ['response.output_text.done', 0],
+      ['response.content_part.done', 0],
+      ['response.output_item.done', 0],
+      ...call(1),
+      ...call(2),
+      ['response.completed', null],
+    ]);
+    const added = list[8].data.item;
+    assert.equal(added.arguments, '');
+    assert.equal(added.status, 'in_progress');
+    const done = list[11].data.item;
+    assert.equal(done.call_id, 'toolu_1');
+    assert.deepEqual(argsOf(done).tools, ['get_weather']);
+    assert.deepEqual(list.at(-1).data.response.output.map((o) => o.type), ['message', 'function_call', 'function_call']);
+  });
+
+  it('records tool calls in the activity log', async () => {
+    const { recent, limits } = await (await fetch(`${server.url}/activity`)).json();
+    const entry = recent.find((r) => r.source === '/v1/responses');
+    assert.equal(entry.status, 'ok');
+    assert.equal(entry.toolCalls, 2);
+    assert.deepEqual(entry.models, ['claude-fake-1']);
+    assert.equal(limits.info.unifiedWindows.five_hour.utilization, 0.5);
+  });
+});

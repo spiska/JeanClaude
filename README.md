@@ -10,7 +10,7 @@ It is meant for your own experiments, not for production or for apps that other 
 
 A tiny HTTP API in front of the [Claude](https://claude.com/claude-code) CLI. It gives you:
 
-- an **OpenAI-compatible** `POST /v1/chat/completions` and `POST /v1/responses` (both with streaming), so apps that accept a custom OpenAI base URL can use Claude as their provider;
+- an **OpenAI-compatible** `POST /v1/chat/completions` and `POST /v1/responses` (both with streaming and tool calling), so apps that accept a custom OpenAI base URL can use Claude as their provider;
 - a simple `POST /message` that returns the CLI's raw JSON result, optionally streamed;
 - a small **chat page** in the browser at `/`, built on `/message`;
 - an **activity dashboard** at `/dashboard` showing what the running instance is doing.
@@ -159,7 +159,7 @@ If the server uses `JEANCLAUDE_API_KEY`, add `-H "authorization: Bearer $JEANCLA
 | `stream`, `stream_options.include_usage` | Supported.                                                 |
 | `model`                              | Claude aliases and ids are passed on; any other name (e.g. `gpt-4o`) uses Claude's default model. |
 | `GET /v1/models`                     | Supported.                                                     |
-| Tool / function calling              | Not supported — `tools` is ignored and the model answers in text. |
+| Tool / function calling              | Supported for `function` tools, with `tool_choice` and `parallel_tool_calls` — see [Tool calling](#tool-calling). |
 | Images and other non-text content    | Not supported — rejected with 400.                             |
 | `temperature`, `max_tokens`, `n`, …  | Ignored — the CLI has no equivalent.                           |
 
@@ -178,7 +178,23 @@ curl -s localhost:3000/v1/responses \
 - `input` is a string or a list of messages (`input_text` / `output_text` parts); `instructions` becomes the system prompt.
 - `"stream": true` sends the standard events, from `response.created` through `response.output_text.delta` to `response.completed` (or `response.failed`).
 - It is stateless too: `previous_response_id` is rejected with 400, so the client has to send the whole conversation in `input` (most do when `store` is off).
-- The same limits as above apply: text only, no tool calling (`tools` is ignored; earlier `function_call` items in `input` are passed on as text), sampling parameters are ignored.
+- Function tools work as in Chat Completions: calls come back as `function_call` output items (streamed with `response.function_call_arguments.*` events), results go in as `function_call_output` items.
+- The same limits as above apply otherwise: text only, sampling parameters are ignored, and built-in tools such as `web_search_preview` are rejected with 400.
+
+### Tool calling
+
+Both endpoints take the client's `function` tools, so agents such as n8n's AI Agent can use them. The model asks for tools, your client runs them and sends the results back, as with OpenAI:
+
+1. The request has `tools`. JeanClaude hands them to `claude` through a small MCP server ([`tools-mcp.js`](tools-mcp.js)), so Claude sees them as its own tools named `mcp__client__<name>` and calls them natively — several at once if it wants.
+2. As soon as Claude has asked for tools, JeanClaude stops `claude` and returns the calls: `tool_calls` with `finish_reason: "tool_calls"` in Chat Completions, `function_call` items in the Responses API. Any text Claude wrote before the calls comes along.
+3. The client runs the tools and sends the whole conversation again with the results (`role: "tool"` messages, or `function_call_output` items). `claude` starts afresh, reads the earlier calls and results as part of the transcript, and either calls more tools or answers.
+
+Details:
+
+- Nothing is kept between requests, so this works across restarts and replicas. Each step re-reads the whole conversation, which costs more input tokens than a native API would.
+- `tool_choice`: `"auto"` (default), `"none"` (Claude gets no tools), `"required"` and a specific function are passed on as an instruction to Claude, not enforced. `parallel_tool_calls: false` returns only the first call.
+- In clean mode Claude keeps its own tools (web search, reading the workspace) alongside yours and may use them before it answers; it calls them itself and they never reach the client.
+- A step that ends in tool calls reports its token usage but no cost (`claude` reports the cost only for a finished run).
 
 ## `POST /message`
 

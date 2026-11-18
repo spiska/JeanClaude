@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { HttpError } from '../claude.js';
-import { chunk, completion, errorBody, resolveModel, response, responsesToMessages, toPrompt } from '../openai.js';
+import { chunk, clientTools, completion, errorBody, resolveModel, response, responsesToMessages, toPrompt } from '../openai.js';
 
 describe('resolveModel', () => {
   it('passes Claude aliases and ids through', () => {
@@ -78,17 +78,21 @@ describe('responsesToMessages', () => {
     assert.match(prompt, /### User\nHi\n\n### Assistant\nHello!\n\n### User\nBye$/);
   });
 
-  it('writes earlier function calls into the transcript', () => {
+  it('turns function calls and their outputs into tool messages', () => {
     const messages = responsesToMessages({
       input: [
         { role: 'user', content: 'Weather?' },
         { type: 'function_call', call_id: 'c1', name: 'get_weather', arguments: '{"city":"Prague"}' },
+        { type: 'function_call', call_id: 'c2', name: 'get_weather', arguments: '{"city":"Rome"}' },
         { type: 'function_call_output', call_id: 'c1', output: 'sunny' },
+        { type: 'function_call_output', call_id: 'c2', output: 'rainy' },
       ],
     });
+    const call = (id, city) => ({ id, type: 'function', function: { name: 'get_weather', arguments: `{"city":"${city}"}` } });
     assert.deepEqual(messages.slice(1), [
-      { role: 'assistant', content: '[called get_weather with {"city":"Prague"}]' },
-      { role: 'tool', content: 'sunny' },
+      { role: 'assistant', content: null, tool_calls: [call('c1', 'Prague'), call('c2', 'Rome')] },
+      { role: 'tool', tool_call_id: 'c1', content: 'sunny' },
+      { role: 'tool', tool_call_id: 'c2', content: 'rainy' },
     ]);
   });
 
@@ -141,5 +145,70 @@ describe('response bodies', () => {
   it('builds OpenAI-style errors', () => {
     assert.equal(errorBody(new Error('bad'), 400).error.type, 'invalid_request_error');
     assert.equal(errorBody(new Error('boom'), 502).error.type, 'server_error');
+  });
+});
+
+describe('tools', () => {
+  const weather = { name: 'get_weather', description: 'Weather in a city', parameters: { type: 'object', properties: { city: { type: 'string' } } } };
+
+  it('reads function tools in both formats', () => {
+    const chat = clientTools({ tools: [{ type: 'function', function: weather }] });
+    const responses = clientTools({ tools: [{ type: 'function', ...weather }] });
+    assert.deepEqual(chat.tools, [{ name: 'get_weather', description: 'Weather in a city', inputSchema: weather.parameters }]);
+    assert.deepEqual(responses.tools, chat.tools);
+    assert.match(chat.toolInstruction, /mcp__client__/);
+  });
+
+  it('follows tool_choice', () => {
+    const tools = [{ type: 'function', function: weather }];
+    assert.deepEqual(clientTools({ tools, tool_choice: 'none' }), {});
+    assert.deepEqual(clientTools({ tools: [] }), {});
+    assert.match(clientTools({ tools, tool_choice: 'required' }).toolInstruction, /at least one/);
+    assert.match(clientTools({ tools, tool_choice: { type: 'function', function: { name: 'get_weather' } } }).toolInstruction, /call the tool mcp__client__get_weather/);
+    assert.match(clientTools({ tools, tool_choice: { type: 'function', name: 'get_weather' } }).toolInstruction, /mcp__client__get_weather/);
+  });
+
+  it('rejects tools it cannot offer', () => {
+    const rejects = (body, pattern) =>
+      assert.throws(() => clientTools(body), (err) => err instanceof HttpError && err.status === 400 && pattern.test(err.message));
+    rejects({ tools: {} }, /must be an array/);
+    rejects({ tools: [{ type: 'web_search_preview' }] }, /only function tools/);
+    rejects({ tools: [{ type: 'function', function: { name: 'bad name' } }] }, /name/);
+    rejects({ tools: [{ type: 'function', function: weather }], tool_choice: { type: 'function', function: { name: 'other' } } }, /not in "tools"/);
+  });
+
+  it('writes earlier tool calls and results into the transcript', () => {
+    const { prompt } = toPrompt([
+      { role: 'user', content: 'Weather in Prague?' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Prague"}' } }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'sunny' },
+    ]);
+    assert.match(prompt, /### Assistant\n\[Called tool mcp__client__get_weather \(call id c1\) with arguments \{"city":"Prague"\}\]/);
+    assert.match(prompt, /### Tool result \(call id c1\)\nsunny/);
+  });
+
+  const result = {
+    result: '',
+    usage: { input_tokens: 1, output_tokens: 2 },
+    tool_calls: [{ id: 'toolu_1', name: 'get_weather', arguments: '{"city":"Prague"}' }],
+  };
+
+  it('returns tool calls as a chat completion', () => {
+    const { message, finish_reason } = completion({ id: 'x', created: 1, model: 'm', result }).choices[0];
+    assert.equal(finish_reason, 'tool_calls');
+    assert.deepEqual(message, {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'toolu_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Prague"}' } }],
+    });
+  });
+
+  it('returns tool calls as Responses API function_call items', () => {
+    const body = response({ id: 'resp_1', messageId: 'msg_1', created: 1, model: 'm', result });
+    assert.deepEqual(body.output, [
+      { type: 'function_call', id: 'fc_toolu_1', call_id: 'toolu_1', name: 'get_weather', arguments: '{"city":"Prague"}', status: 'completed' },
+    ]);
+    const withText = response({ id: 'resp_1', messageId: 'msg_1', created: 1, model: 'm', result: { ...result, result: 'Let me check.' } });
+    assert.deepEqual(withText.output.map((o) => o.type), ['message', 'function_call']);
   });
 });

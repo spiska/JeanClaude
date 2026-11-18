@@ -8,9 +8,12 @@ import { rejected, snapshot } from './activity.js';
 import { CLAUDE_BIN, CLAUDE_CWD, HttpError, MODE, runClaude, streamClaude } from './claude.js';
 import {
   MODELS,
+  chatToolCalls,
   chunk,
+  clientTools,
   completion,
   errorBody,
+  functionCallItem,
   newCompletionId,
   newResponseIds,
   resolveModel,
@@ -95,6 +98,11 @@ app.get('/activity', (c) => {
   c.header('Cache-Control', 'no-store');
   return c.json({ mode: MODE, ...snapshot() });
 });
+
+/** The client's tools for claude, from a Chat Completions or Responses API body. */
+function toolOptions(body) {
+  return { ...clientTools(body), singleToolCall: body.parallel_tool_calls === false };
+}
 
 async function jsonBody(c) {
   try {
@@ -189,7 +197,7 @@ app.post('/v1/chat/completions', async (c) => {
     created: Math.floor(Date.now() / 1000),
     model: typeof body.model === 'string' ? body.model : 'default',
   };
-  const options = { source: '/v1/chat/completions', prompt, systemPrompt, model: resolveModel(body.model), persist: false };
+  const options = { source: '/v1/chat/completions', prompt, systemPrompt, model: resolveModel(body.model), persist: false, ...toolOptions(body) };
 
   if (!body.stream) {
     const result = await runClaude({ ...options, signal: c.req.raw.signal });
@@ -205,7 +213,9 @@ app.post('/v1/chat/completions', async (c) => {
         await send(chunk({ ...base, delta: { content: e.text } }));
       } else if (e.type === 'result') {
         if (!sentText && e.result.result) await send(chunk({ ...base, delta: { content: String(e.result.result) } }));
-        await send(chunk({ ...base, delta: {}, finishReason: 'stop' }));
+        const calls = chatToolCalls(e.result);
+        for (const call of calls) await send(chunk({ ...base, delta: { tool_calls: [call] } }));
+        await send(chunk({ ...base, delta: {}, finishReason: calls.length ? 'tool_calls' : 'stop' }));
         if (body.stream_options?.include_usage) await send(chunk({ ...base, result: e.result }));
       }
     },
@@ -224,41 +234,67 @@ app.post('/v1/responses', async (c) => {
     created: Math.floor(Date.now() / 1000),
     model: typeof body.model === 'string' ? body.model : 'default',
     instructions: body.instructions,
+    tools: Array.isArray(body.tools) ? body.tools : [],
+    toolChoice: body.tool_choice,
+    parallelToolCalls: body.parallel_tool_calls,
   };
-  const options = { source: '/v1/responses', prompt, systemPrompt, model: resolveModel(body.model), persist: false };
+  const options = { source: '/v1/responses', prompt, systemPrompt, model: resolveModel(body.model), persist: false, ...toolOptions(body) };
 
   if (!body.stream) {
     const result = await runClaude({ ...options, signal: c.req.raw.signal });
     return c.json(response({ ...base, result }));
   }
 
-  // Each event repeats its type in the data and carries a sequence number.
+  // Each event repeats its type in the data and carries a sequence number. The
+  // message item is opened with the first text, so a reply that only calls tools
+  // has no empty message in front of them.
   let sequence = 0;
   const emit = (send, type, fields) => send({ type, sequence_number: sequence++, ...fields }, type);
   const at = { item_id: base.messageId, output_index: 0, content_index: 0 };
+  let opened = false;
   let text = '';
+  const open = async (send) => {
+    opened = true;
+    const item = responseMessage({ messageId: base.messageId, status: 'in_progress' });
+    await emit(send, 'response.output_item.added', { output_index: 0, item });
+    await emit(send, 'response.content_part.added', { ...at, part: { type: 'output_text', text: '', annotations: [] } });
+  };
   return streamResponse(c, options, {
     start: async (send) => {
       await emit(send, 'response.created', { response: response(base) });
       await emit(send, 'response.in_progress', { response: response(base) });
-      const item = responseMessage({ messageId: base.messageId, status: 'in_progress' });
-      await emit(send, 'response.output_item.added', { output_index: 0, item });
-      await emit(send, 'response.content_part.added', { ...at, part: { type: 'output_text', text: '', annotations: [] } });
     },
     event: async (e, send) => {
       if (e.type === 'delta') {
+        if (!opened) await open(send);
         text += e.text;
         await emit(send, 'response.output_text.delta', { ...at, delta: e.text, logprobs: [] });
       } else if (e.type === 'result') {
         const final = String(e.result.result ?? '');
-        if (!text && final) await emit(send, 'response.output_text.delta', { ...at, delta: final, logprobs: [] });
+        const calls = e.result.tool_calls ?? [];
+        if (!text && final) {
+          await open(send);
+          await emit(send, 'response.output_text.delta', { ...at, delta: final, logprobs: [] });
+        }
         // The stream's text is what the client has seen; it can differ from the
         // result in the separators between model turns.
         const done = text || final;
-        await emit(send, 'response.output_text.done', { ...at, text: done, logprobs: [] });
-        await emit(send, 'response.content_part.done', { ...at, part: { type: 'output_text', text: done, annotations: [] } });
         const finished = response({ ...base, result: { ...e.result, result: done } });
-        await emit(send, 'response.output_item.done', { output_index: 0, item: finished.output[0] });
+        if (!opened && !calls.length) await open(send); // an empty answer still gets its message
+        if (opened) {
+          await emit(send, 'response.output_text.done', { ...at, text: done, logprobs: [] });
+          await emit(send, 'response.content_part.done', { ...at, part: { type: 'output_text', text: done, annotations: [] } });
+          await emit(send, 'response.output_item.done', { output_index: 0, item: finished.output[0] });
+        }
+        let index = opened ? 1 : 0;
+        for (const call of calls) {
+          const item = functionCallItem(call);
+          await emit(send, 'response.output_item.added', { output_index: index, item: functionCallItem(call, 'in_progress') });
+          await emit(send, 'response.function_call_arguments.delta', { item_id: item.id, output_index: index, delta: call.arguments });
+          await emit(send, 'response.function_call_arguments.done', { item_id: item.id, output_index: index, name: call.name, arguments: call.arguments });
+          await emit(send, 'response.output_item.done', { output_index: index, item });
+          index++;
+        }
         await emit(send, 'response.completed', { response: finished });
       }
     },

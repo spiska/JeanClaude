@@ -215,7 +215,11 @@ function when(ms) {
 const now = () => Date.now() + clockSkew;
 const modelOf = (r) => (r.models?.length ? r.models.join(', ') : r.model ?? '–');
 const STATUS_TEXT = { ok: 'OK', error: 'Failed', cancelled: 'Cancelled' };
-const statusText = (r) => (r.status === 'rejected' ? `HTTP ${r.httpStatus}` : STATUS_TEXT[r.status] ?? r.status);
+function statusText(r) {
+  if (r.status === 'rejected') return `HTTP ${r.httpStatus}`;
+  if (r.status === 'ok' && r.toolCalls) return `Tool call${r.toolCalls === 1 ? '' : 's'} (${r.toolCalls})`;
+  return STATUS_TEXT[r.status] ?? r.status;
+}
 
 async function poll() {
   const key = sessionKey || settings().apiKey;

@@ -1,6 +1,6 @@
 // Translation between the OpenAI formats (Chat Completions, Responses) and `claude -p`.
 import { randomUUID } from 'node:crypto';
-import { HttpError } from './claude.js';
+import { CLIENT_TOOL_PREFIX, HttpError } from './claude.js';
 
 // Model names claude understands. Anything else (e.g. "gpt-4o" hard-coded in a
 // client) falls back to claude's default model instead of failing.
@@ -29,6 +29,51 @@ function textOf(content, where) {
   throw new HttpError(400, `${where}: "content" must be a string or an array of text parts`);
 }
 
+const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+const TOOL_NOTE =
+  `Tools whose names start with ${CLIENT_TOOL_PREFIX} belong to the application you are talking through: ` +
+  'when you call one, the application runs it and its result comes back in the conversation. Earlier tool ' +
+  'calls and their results are written out in the conversation as text. To call a tool, always use it ' +
+  'directly — never write a tool call out as text.';
+
+/**
+ * The client's function tools, from either API's `tools` and `tool_choice`
+ * (Chat Completions nests each definition in `function`, the Responses API does
+ * not). Returns MCP tool definitions for claude and a note for its system prompt,
+ * or nothing when there are no tools or tool_choice is "none".
+ */
+export function clientTools({ tools, tool_choice }) {
+  if (tools == null) return {};
+  if (!Array.isArray(tools)) throw new HttpError(400, '"tools" must be an array');
+  const list = tools.map((t, i) => {
+    if (t?.type !== 'function') throw new HttpError(400, `tools[${i}]: only function tools are supported (got "${t?.type}")`);
+    const f = t.function ?? t;
+    if (typeof f.name !== 'string' || !TOOL_NAME.test(f.name)) {
+      throw new HttpError(400, `tools[${i}]: the name must be 1-64 letters, digits, "_" or "-"`);
+    }
+    const schema = f.parameters && typeof f.parameters === 'object' ? f.parameters : {};
+    return { name: f.name, description: typeof f.description === 'string' ? f.description : '', inputSchema: { type: 'object', ...schema } };
+  });
+  if (!list.length || tool_choice === 'none') return {};
+
+  const forced = tool_choice && typeof tool_choice === 'object' ? (tool_choice.function?.name ?? tool_choice.name) : undefined;
+  if (forced !== undefined && !list.some((t) => t.name === forced)) {
+    throw new HttpError(400, `"tool_choice" names a tool that is not in "tools": ${forced}`);
+  }
+  let instruction = TOOL_NOTE;
+  if (forced) instruction += ` Now call the tool ${CLIENT_TOOL_PREFIX}${forced}.`;
+  else if (tool_choice === 'required') instruction += ' Now call at least one of these tools.';
+  return { tools: list, toolInstruction: instruction };
+}
+
+/** An earlier tool call written out for the transcript. */
+function callText(call, where) {
+  const name = call?.function?.name;
+  if (typeof name !== 'string') throw new HttpError(400, `${where}: a tool call needs "function.name"`);
+  const args = typeof call.function.arguments === 'string' ? call.function.arguments : JSON.stringify(call.function.arguments ?? {});
+  return `[Called tool ${CLIENT_TOOL_PREFIX}${name} (call id ${call.id ?? '?'}) with arguments ${args}]`;
+}
+
 /**
  * claude -p takes one prompt, not a message list. System messages become the system
  * prompt; a single user message is passed through as-is; a longer conversation is
@@ -46,8 +91,13 @@ export function toPrompt(messages) {
     const text = textOf(m?.content, where);
     if (m.role === 'system' || m.role === 'developer') system.push(text);
     else if (m.role === 'user') turns.push({ label: 'User', text });
-    else if (m.role === 'assistant') turns.push({ label: 'Assistant', text });
-    else if (m.role === 'tool') turns.push({ label: 'Tool result', text });
+    else if (m.role === 'assistant') {
+      if (m.tool_calls != null && !Array.isArray(m.tool_calls)) throw new HttpError(400, `${where}: "tool_calls" must be an array`);
+      const calls = (m.tool_calls ?? []).map((call, j) => callText(call, `${where}.tool_calls[${j}]`));
+      turns.push({ label: 'Assistant', text: [text, ...calls].filter(Boolean).join('\n') });
+    } else if (m.role === 'tool') {
+      turns.push({ label: `Tool result${m.tool_call_id ? ` (call id ${m.tool_call_id})` : ''}`, text });
+    }
     else throw new HttpError(400, `${where}: unknown role "${m?.role}"`);
   });
 
@@ -87,10 +137,14 @@ export function responsesToMessages({ input, instructions, previous_response_id 
     const type = item?.type ?? 'message';
     if (type === 'message') messages.push({ role: item.role, content: item.content });
     else if (type === 'function_call') {
-      messages.push({ role: 'assistant', content: `[called ${item.name} with ${item.arguments}]` });
+      // Calls made together belong to one assistant turn, with any text before them.
+      const call = { id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments } };
+      const last = messages.at(-1);
+      if (last?.role === 'assistant') last.tool_calls = [...(last.tool_calls ?? []), call];
+      else messages.push({ role: 'assistant', content: null, tool_calls: [call] });
     } else if (type === 'function_call_output') {
       const output = typeof item.output === 'string' ? item.output : textOf(item.output, `input[${i}].output`);
-      messages.push({ role: 'tool', content: output });
+      messages.push({ role: 'tool', tool_call_id: item.call_id, content: output });
     } else if (type !== 'reasoning') {
       throw new HttpError(400, `input[${i}]: unsupported item type "${type}"`);
     }
@@ -109,7 +163,19 @@ export function newCompletionId() {
   return `chatcmpl-${randomUUID().replaceAll('-', '')}`;
 }
 
+/** The tool calls claude asked for, in the Chat Completions format. */
+export function chatToolCalls(result) {
+  return (result?.tool_calls ?? []).map((call, index) => ({
+    index,
+    id: call.id,
+    type: 'function',
+    function: { name: call.name, arguments: call.arguments },
+  }));
+}
+
 export function completion({ id, created, model, result }) {
+  const text = String(result.result ?? '');
+  const calls = chatToolCalls(result).map(({ index, ...call }) => call);
   return {
     id,
     object: 'chat.completion',
@@ -118,8 +184,10 @@ export function completion({ id, created, model, result }) {
     choices: [
       {
         index: 0,
-        message: { role: 'assistant', content: String(result.result ?? '') },
-        finish_reason: 'stop',
+        message: calls.length
+          ? { role: 'assistant', content: text || null, tool_calls: calls }
+          : { role: 'assistant', content: text },
+        finish_reason: calls.length ? 'tool_calls' : 'stop',
       },
     ],
     usage: usageOf(result),
@@ -166,11 +234,30 @@ export function responseMessage({ messageId, text, status = 'completed' }) {
   };
 }
 
+/** A tool call claude asked for, as a Responses API output item. */
+export function functionCallItem(call, status = 'completed') {
+  return {
+    type: 'function_call',
+    id: `fc_${call.id}`,
+    call_id: call.id,
+    name: call.name,
+    arguments: status === 'completed' ? call.arguments : '',
+    status,
+  };
+}
+
+/** A finished response's output: the message (left out when there are only tool calls), then the calls. */
+function responseOutput(messageId, result) {
+  const text = String(result.result ?? '');
+  const calls = result.tool_calls ?? [];
+  return [...(text || !calls.length ? [responseMessage({ messageId, text })] : []), ...calls.map((c) => functionCallItem(c))];
+}
+
 /**
  * A Responses API response object. Without `result` it is the in-progress shell
  * sent at the start of a stream; with `error` it is a failed one.
  */
-export function response({ id, messageId, created, model, instructions, result, error }) {
+export function response({ id, messageId, created, model, instructions, tools, toolChoice, parallelToolCalls, result, error }) {
   const status = error ? 'failed' : result ? 'completed' : 'in_progress';
   return {
     id,
@@ -181,10 +268,10 @@ export function response({ id, messageId, created, model, instructions, result, 
     incomplete_details: null,
     instructions: instructions ?? null,
     model,
-    output: result ? [responseMessage({ messageId, text: String(result.result ?? '') })] : [],
-    parallel_tool_calls: true,
-    tool_choice: 'auto',
-    tools: [],
+    output: result ? responseOutput(messageId, result) : [],
+    parallel_tool_calls: parallelToolCalls ?? true,
+    tool_choice: toolChoice ?? 'auto',
+    tools: tools ?? [],
     usage: result ? responseUsage(result) : null,
   };
 }
